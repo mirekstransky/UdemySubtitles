@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8" />
+  <title>Udemy Subtitle Translate</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      width: 320px;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 13px;
+      background: #13131f;
+      color: #d4d4e8;
+    }
+
+    /* ── Header ── */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      background: linear-gradient(135deg, #5521b5 0%, #7c3aed 100%);
+    }
+    .header-icon {
+      width: 32px;
+      height: 32px;
+      flex-shrink: 0;
+      background: rgba(255,255,255,0.15);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+    .header-text h1 {
+      font-size: 14px;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1.2;
+    }
+    .header-text p {
+      font-size: 11px;
+      color: rgba(255,255,255,0.6);
+      margin-top: 1px;
+    }
+    .header-toggle {
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+
+    /* ── Toggle switch ── */
+    .toggle {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+      cursor: pointer;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-track {
+      position: absolute;
+      inset: 0;
+      background: rgba(255,255,255,0.25);
+      border-radius: 24px;
+      transition: background 0.25s;
+    }
+    .toggle-thumb {
+      position: absolute;
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.25s;
+    }
+    .toggle input:checked ~ .toggle-track { background: #10b981; }
+    .toggle input:checked ~ .toggle-thumb { transform: translateX(20px); }
+
+    /* ── Form ── */
+    .form {
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      border-bottom: 1px solid #22223a;
+    }
+    .field { display: flex; flex-direction: column; gap: 5px; }
+    .field-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #7c7ca8;
+    }
+    select {
+      width: 100%;
+      padding: 8px 10px;
+      background: #1e1e30;
+      border: 1px solid #33335a;
+      border-radius: 7px;
+      color: #d4d4e8;
+      font-size: 13px;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%237c7ca8'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      cursor: pointer;
+    }
+    select:focus {
+      outline: none;
+      border-color: #7c3aed;
+    }
+
+    /* ── Range ── */
+    .range-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .range-row input[type=range] {
+      flex: 1;
+      accent-color: #7c3aed;
+      cursor: pointer;
+    }
+    .range-val {
+      font-size: 13px;
+      font-weight: 700;
+      color: #a78bfa;
+      min-width: 40px;
+      text-align: right;
+    }
+
+    /* ── Status ── */
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 12px 16px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: #44445a;
+      transition: background 0.3s;
+    }
+    .status-dot.active { background: #10b981; }
+    .status-dot.warn   { background: #f59e0b; }
+    .status-text {
+      font-size: 12px;
+      color: #7c7ca8;
+      line-height: 1.4;
+    }
+
+    /* ── Footer ── */
+    .footer {
+      padding: 8px 16px 12px;
+      font-size: 11px;
+      color: #44445a;
+      text-align: center;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="header-icon">🎓</div>
+    <div class="header-text">
+      <h1>Subtitle Translate</h1>
+      <p>udemy.com</p>
+    </div>
+    <div class="header-toggle">
+      <label class="toggle" title="Zapnout / vypnout překlad">
+        <input type="checkbox" id="enabled" />
+        <span class="toggle-track"></span>
+        <span class="toggle-thumb"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="form">
+    <div class="field">
+      <span class="field-label">Přeložit do</span>
+      <select id="lang"></select>
+    </div>
+
+    <div class="field">
+      <span class="field-label">Zdrojový jazyk</span>
+      <select id="sourceLang"></select>
+    </div>
+
+    <div class="field">
+      <span class="field-label">Velikost překladu</span>
+      <div class="range-row">
+        <input type="range" id="fontSize" min="60" max="200" step="5" />
+        <span class="range-val" id="fontSizeVal">110%</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+        <input type="checkbox" id="hideOriginal" style="accent-color:#7c3aed; width:15px; height:15px; flex-shrink:0;" />
+        <span style="font-size:12px; color:#d4d4e8; line-height:1.3;">Pouze překlad <span style="color:#7c7ca8;">(skrýt originál)</span></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="status">
+    <span class="status-dot" id="statusDot"></span>
+    <span class="status-text" id="statusText">Načítám stav…</span>
+  </div>
+
+  <div class="footer">
+    Překlad: Google Translate (gtx endpoint).<br>
+    Neoficiální API – bez záruky dostupnosti.
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
