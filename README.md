@@ -27,6 +27,7 @@ Po aktualizaci rozšíření (tlačítko ⟳ v `chrome://extensions`) obnovte ot
 | Přeložit do | Cílový jazyk překladu |
 | Zdrojový jazyk | Jazyk titulků ve videu (auto = detekovat automaticky) |
 | Velikost titulků | Relativní velikost písma (60 – 200 %) |
+| Svislá pozice | Posun titulků v ose Y v % výšky videa (−10 až +80 %, kladné = nahoru, 0 = výchozí pozice Udemy). Přizpůsobí se i fullscreenu. Tlačítko **Výchozí** vrátí na 0. |
 
 ## Klávesové zkratky
 
@@ -34,6 +35,7 @@ Po aktualizaci rozšíření (tlačítko ⟳ v `chrome://extensions`) obnovte ot
 |---|---|
 | `Alt+T` | Přepnout zobrazení originál + překlad ↔ pouze překlad |
 | `Alt+Shift+T` | Zapnout / vypnout překlad |
+| `Alt+↑` / `Alt+↓` | Posunout titulky nahoru / dolů (po 5 %) |
 
 Zkratky lze změnit na `chrome://extensions/shortcuts` (odkaz je i v popupu).
 
@@ -71,7 +73,7 @@ UdemySubtitles/
 Otevřete DevTools na Udemy stránce → Console → filtrujte `[UST]`:
 
 ```
-[UST] Udemy Subtitle Translate v1.1.0 loaded
+[UST] Udemy Subtitle Translate v1.2.0 loaded
 [UST] translation error: HTTP 429     ← rate limit
 ```
 

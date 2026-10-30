@@ -29,6 +29,9 @@ html.ust-active [data-ust-native] {
   line-height: 1.4;
   text-align: center;
   pointer-events: none;
+  /* Vertical position: --ust-offset is computed by content.js from the video height. */
+  transform: translateY(var(--ust-offset, 0px));
+  transition: transform 0.15s ease-out;
 }
 
 .ust-overlay[hidden] {

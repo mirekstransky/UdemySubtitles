@@ -134,17 +134,49 @@
     state.overlay = null;
   }
 
+  // ─── Vertical position ───────────────────────────────────────────────────────
+  // The offset is stored as % of the video height so it scales with the player
+  // (normal / theatre / fullscreen). A ResizeObserver on the video re-renders on resize.
+  const resizeObserver = new ResizeObserver(() => scheduleSync());
+  let observedVideo = null;
+
+  /** Nearest <video> sharing an ancestor with the caption (i.e. the same player). */
+  function findVideoFor(el) {
+    for (let node = el.parentElement; node; node = node.parentElement) {
+      const video = node.querySelector('video');
+      if (video) return video;
+    }
+    return null;
+  }
+
+  function verticalOffsetPx(captionEl) {
+    if (!state.cfg.verticalOffset) return 0;
+
+    const video = findVideoFor(captionEl);
+    if (video !== observedVideo) {
+      if (observedVideo) resizeObserver.unobserve(observedVideo);
+      if (video) resizeObserver.observe(video);
+      observedVideo = video;
+    }
+    const height = video?.getBoundingClientRect().height ?? 0;
+    return Math.round((-state.cfg.verticalOffset / 100) * height); // negative = up
+  }
+
   function render(captionEl) {
     if (!captionEl?.parentElement || !state.original) {
       if (state.overlay) state.overlay.hidden = true;
       return;
     }
 
+    // Measure before touching the overlay so a freshly created overlay gets its
+    // final position without an animated jump.
+    const offsetPx = verticalOffsetPx(captionEl);
     const overlay = ensureOverlay(captionEl.parentElement);
     const [originalEl, translationEl] = overlay.children;
 
     overlay.dataset.mode = state.cfg.displayMode;
     overlay.style.setProperty('--ust-font-size', `${state.cfg.fontSize}%`);
+    overlay.style.setProperty('--ust-offset', `${offsetPx}px`);
     setText(originalEl, state.original);
     setText(translationEl, state.translation);
     overlay.hidden = false;

@@ -12,7 +12,17 @@
 
 importScripts('shared.js');
 
-const { LOG_PREFIX, DISPLAY_MODES, MESSAGES, COMMANDS, loadSettings, saveSettings } = UST;
+const {
+  LOG_PREFIX,
+  DISPLAY_MODES,
+  MESSAGES,
+  COMMANDS,
+  OFFSET_MIN,
+  OFFSET_MAX,
+  OFFSET_STEP,
+  loadSettings,
+  saveSettings,
+} = UST;
 
 const GTX_ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
 const MAX_QUERY_CHARS = 2000;
@@ -71,6 +81,13 @@ chrome.commands.onCommand.addListener(async command => {
     case COMMANDS.TOGGLE_ENABLED:
       await saveSettings({ enabled: !cfg.enabled });
       break;
+    case COMMANDS.MOVE_UP:
+    case COMMANDS.MOVE_DOWN: {
+      const delta = command === COMMANDS.MOVE_UP ? OFFSET_STEP : -OFFSET_STEP;
+      const verticalOffset = Math.min(OFFSET_MAX, Math.max(OFFSET_MIN, cfg.verticalOffset + delta));
+      if (verticalOffset !== cfg.verticalOffset) await saveSettings({ verticalOffset });
+      break;
+    }
   }
 });
 

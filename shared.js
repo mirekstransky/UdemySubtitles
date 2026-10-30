@@ -16,10 +16,20 @@
     sourceLang: 'auto',
     fontSize: 110,
     displayMode: DISPLAY_MODES.BOTH,
+    // Vertical shift in % of the video height; positive = up, 0 = Udemy's native position.
+    verticalOffset: 0,
   });
 
   const FONT_SIZE_MIN = 60;
   const FONT_SIZE_MAX = 200;
+  const OFFSET_MIN = -10;
+  const OFFSET_MAX = 80;
+  const OFFSET_STEP = 5;
+
+  const clamp = (value, min, max, fallback) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+  };
 
   const MESSAGES = Object.freeze({
     TRANSLATE: 'ust/translate',
@@ -29,6 +39,8 @@
   const COMMANDS = Object.freeze({
     TOGGLE_DISPLAY_MODE: 'toggle-display-mode',
     TOGGLE_ENABLED: 'toggle-enabled',
+    MOVE_UP: 'move-up',
+    MOVE_DOWN: 'move-down',
   });
 
   /** Returns a complete, validated settings object. */
@@ -37,10 +49,8 @@
     if (!Object.values(DISPLAY_MODES).includes(s.displayMode)) {
       s.displayMode = DEFAULTS.displayMode;
     }
-    const size = Number(s.fontSize);
-    s.fontSize = Number.isFinite(size)
-      ? Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, size))
-      : DEFAULTS.fontSize;
+    s.fontSize = clamp(s.fontSize, FONT_SIZE_MIN, FONT_SIZE_MAX, DEFAULTS.fontSize);
+    s.verticalOffset = clamp(s.verticalOffset, OFFSET_MIN, OFFSET_MAX, DEFAULTS.verticalOffset);
     s.enabled = Boolean(s.enabled);
     return s;
   }
@@ -60,6 +70,9 @@
     DEFAULTS,
     FONT_SIZE_MIN,
     FONT_SIZE_MAX,
+    OFFSET_MIN,
+    OFFSET_MAX,
+    OFFSET_STEP,
     MESSAGES,
     COMMANDS,
     normalizeSettings,

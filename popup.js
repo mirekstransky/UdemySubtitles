@@ -1,6 +1,19 @@
 'use strict';
 
-const { MESSAGES, COMMANDS, FONT_SIZE_MIN, FONT_SIZE_MAX, loadSettings, saveSettings } = UST;
+const {
+  MESSAGES,
+  COMMANDS,
+  DEFAULTS,
+  FONT_SIZE_MIN,
+  FONT_SIZE_MAX,
+  OFFSET_MIN,
+  OFFSET_MAX,
+  OFFSET_STEP,
+  loadSettings,
+  saveSettings,
+} = UST;
+
+const formatOffset = value => (value > 0 ? `+${value} %` : `${value} %`);
 
 const LANGUAGES = [
   { code: 'cs', name: 'Čeština' },
@@ -89,6 +102,7 @@ async function renderShortcuts() {
   container.replaceChildren(
     line(keyOf(COMMANDS.TOGGLE_DISPLAY_MODE), 'přepnout zobrazení'),
     line(keyOf(COMMANDS.TOGGLE_ENABLED), 'zapnout / vypnout'),
+    line(`${keyOf(COMMANDS.MOVE_UP)} / ${keyOf(COMMANDS.MOVE_DOWN)}`, 'posunout nahoru / dolů'),
     manage
   );
 }
@@ -103,6 +117,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   const fontSizeEl = $('fontSize');
   const fontSizeValEl = $('fontSizeVal');
   const modeEls = document.querySelectorAll('input[name="displayMode"]');
+  const offsetEl = $('verticalOffset');
+  const offsetValEl = $('verticalOffsetVal');
+
+  const showOffset = value => {
+    offsetEl.value = value;
+    offsetValEl.textContent = formatOffset(Number(value));
+  };
 
   // Populate controls
   fillSelect(langEl, LANGUAGES, settings.lang);
@@ -113,6 +134,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   fontSizeEl.value = settings.fontSize;
   fontSizeValEl.textContent = `${settings.fontSize}%`;
   for (const el of modeEls) el.checked = el.value === settings.displayMode;
+  offsetEl.min = OFFSET_MIN;
+  offsetEl.max = OFFSET_MAX;
+  offsetEl.step = OFFSET_STEP;
+  showOffset(settings.verticalOffset);
 
   // Event listeners – every change is persisted; content scripts react via storage.onChanged.
   enabledEl.addEventListener('change', async () => {
@@ -128,6 +153,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   for (const el of modeEls) {
     el.addEventListener('change', () => el.checked && saveSettings({ displayMode: el.value }));
   }
+  // Save on release only ('change'), not on every 'input' – storage.sync has a write quota.
+  offsetEl.addEventListener('input', () => showOffset(offsetEl.value));
+  offsetEl.addEventListener('change', () => saveSettings({ verticalOffset: Number(offsetEl.value) }));
+  $('resetOffset').addEventListener('click', () => {
+    showOffset(DEFAULTS.verticalOffset);
+    saveSettings({ verticalOffset: DEFAULTS.verticalOffset });
+  });
 
   // Keep the popup in sync if settings change elsewhere (e.g. keyboard shortcut).
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -136,6 +168,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       for (const el of modeEls) el.checked = el.value === changes.displayMode.newValue;
     }
     if (changes.enabled) enabledEl.checked = changes.enabled.newValue;
+    if (changes.verticalOffset) showOffset(changes.verticalOffset.newValue ?? DEFAULTS.verticalOffset);
   });
 
   renderShortcuts();

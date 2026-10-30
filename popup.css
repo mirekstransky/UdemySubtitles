@@ -129,6 +129,9 @@ select:focus { outline: none; border-color: var(--accent); }
 .range-row { display: flex; align-items: center; gap: 10px; }
 .range-row input[type=range] { flex: 1; accent-color: var(--accent); cursor: pointer; }
 .range-val { font-size: 13px; font-weight: 700; color: var(--accent-soft); min-width: 40px; text-align: right; }
+.range-hint { font-size: 10px; color: var(--faint); }
+.field-head { display: flex; align-items: baseline; justify-content: space-between; }
+.field-head .link-btn { font-size: 11px; }
 
 /* ── Shortcuts ── */
 .shortcuts { font-size: 11px; color: var(--muted); line-height: 1.6; }
