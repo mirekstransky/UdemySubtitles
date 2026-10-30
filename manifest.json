@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Udemy Subtitle Translate",
-  "description": "Zobrazí překlad titulků přímo ve videu na udemy.com. Originál + překlad pod ním.",
-  "version": "1.0.0",
+  "description": "Zobrazí překlad titulků přímo ve videu na udemy.com – originál + překlad, nebo pouze překlad.",
+  "version": "1.1.0",
+  "minimum_chrome_version": "116",
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -14,7 +15,7 @@
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["storage", "tabs"],
+  "permissions": ["storage"],
   "host_permissions": [
     "*://*.udemy.com/*",
     "https://translate.googleapis.com/*"
@@ -22,10 +23,21 @@
   "content_scripts": [
     {
       "matches": ["*://*.udemy.com/*"],
-      "js": ["content.js"],
+      "js": ["shared.js", "content.js"],
+      "css": ["content.css"],
       "run_at": "document_idle"
     }
   ],
+  "commands": {
+    "toggle-display-mode": {
+      "suggested_key": { "default": "Alt+T" },
+      "description": "Přepnout zobrazení: originál + překlad / pouze překlad"
+    },
+    "toggle-enabled": {
+      "suggested_key": { "default": "Alt+Shift+T" },
+      "description": "Zapnout / vypnout překlad"
+    }
+  },
   "icons": {
     "16": "images/icon16.png",
     "48": "images/icon48.png",

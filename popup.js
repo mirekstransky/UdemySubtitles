@@ -1,5 +1,7 @@
 'use strict';
 
+const { MESSAGES, COMMANDS, FONT_SIZE_MIN, FONT_SIZE_MAX, loadSettings, saveSettings } = UST;
+
 const LANGUAGES = [
   { code: 'cs', name: 'Čeština' },
   { code: 'sk', name: 'Slovenčina' },
@@ -26,107 +28,116 @@ const LANGUAGES = [
   { code: 'en', name: 'English' },
 ];
 
-const SOURCE_LANGUAGES = [
-  { code: 'auto', name: 'Automaticky (doporučeno)' },
-  ...LANGUAGES,
-];
+const SOURCE_LANGUAGES = [{ code: 'auto', name: 'Automaticky (doporučeno)' }, ...LANGUAGES];
+
+const $ = id => document.getElementById(id);
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
-function buildSelect(el, options, selectedValue) {
-  el.innerHTML = options
-    .map(
-      o =>
-        `<option value="${o.code}"${o.code === selectedValue ? ' selected' : ''}>${o.name}</option>`
-    )
-    .join('');
-}
-
-function loadSettings() {
-  return new Promise(resolve =>
-    chrome.storage.sync.get(
-      { lang: 'cs', sourceLang: 'auto', fontSize: 110, enabled: true, hideOriginal: false },
-      resolve
-    )
+function fillSelect(select, options, selected) {
+  select.replaceChildren(
+    ...options.map(({ code, name }) => new Option(name, code, false, code === selected))
   );
-}
-
-function save(partial) {
-  chrome.storage.sync.set(partial);
 }
 
 async function queryActiveTabStatus() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) return null;
-    return await chrome.tabs.sendMessage(tab.id, { method: 'getStatus' });
+    return await chrome.tabs.sendMessage(tab.id, { type: MESSAGES.GET_STATUS });
   } catch {
-    return null;
+    return null; // no content script in this tab
   }
 }
 
 // ─── Status UI ─────────────────────────────────────────────────────────────────
 function setStatus(dotClass, text) {
-  document.getElementById('statusDot').className = `status-dot ${dotClass}`;
-  document.getElementById('statusText').textContent = text;
+  $('statusDot').className = `status-dot ${dotClass}`;
+  $('statusText').textContent = text;
 }
 
 function renderStatus(status, enabled) {
+  if (!enabled) return setStatus('', 'Překlad je vypnutý.');
   if (!status) {
-    setStatus('', 'Tato karta není Udemy lekce nebo se nepodařilo připojit ke content scriptu.');
-    return;
+    return setStatus('', 'Tato karta není Udemy lekce nebo je potřeba stránku obnovit (F5).');
   }
-  if (!enabled) {
-    setStatus('', 'Překlad je vypnutý.');
-    return;
-  }
-  if (status.captionFound) {
-    setStatus('active', 'Titulky aktivní – překlad běží.');
-  } else {
-    setStatus('warn', 'Připojeno k Udemy, ale titulky nejsou zapnuty v přehrávači.');
-  }
+  if (status.captionFound) return setStatus('active', 'Titulky aktivní – překlad běží.');
+  setStatus('warn', 'Připojeno k Udemy, ale titulky nejsou zapnuty v přehrávači (CC).');
+}
+
+// ─── Shortcuts ─────────────────────────────────────────────────────────────────
+async function renderShortcuts() {
+  const commands = await chrome.commands.getAll();
+  const keyOf = name => commands.find(c => c.name === name)?.shortcut || '—';
+
+  const container = $('shortcuts');
+  const line = (key, label) => {
+    const row = document.createElement('div');
+    const kbd = document.createElement('kbd');
+    kbd.textContent = key;
+    row.append(kbd, ` ${label}`);
+    return row;
+  };
+
+  const manage = document.createElement('button');
+  manage.className = 'link-btn';
+  manage.type = 'button';
+  manage.textContent = 'Změnit zkratky';
+  manage.addEventListener('click', () =>
+    chrome.tabs.create({ url: 'chrome://extensions/shortcuts' })
+  );
+
+  container.replaceChildren(
+    line(keyOf(COMMANDS.TOGGLE_DISPLAY_MODE), 'přepnout zobrazení'),
+    line(keyOf(COMMANDS.TOGGLE_ENABLED), 'zapnout / vypnout'),
+    manage
+  );
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   const settings = await loadSettings();
 
-  const enabledEl       = document.getElementById('enabled');
-  const langEl          = document.getElementById('lang');
-  const sourceLangEl    = document.getElementById('sourceLang');
-  const fontSizeEl      = document.getElementById('fontSize');
-  const fontSizeValEl   = document.getElementById('fontSizeVal');
-  const hideOriginalEl  = document.getElementById('hideOriginal');
+  const enabledEl = $('enabled');
+  const langEl = $('lang');
+  const sourceLangEl = $('sourceLang');
+  const fontSizeEl = $('fontSize');
+  const fontSizeValEl = $('fontSizeVal');
+  const modeEls = document.querySelectorAll('input[name="displayMode"]');
 
   // Populate controls
-  buildSelect(langEl, LANGUAGES, settings.lang);
-  buildSelect(sourceLangEl, SOURCE_LANGUAGES, settings.sourceLang);
-  enabledEl.checked       = settings.enabled;
-  fontSizeEl.value        = settings.fontSize;
+  fillSelect(langEl, LANGUAGES, settings.lang);
+  fillSelect(sourceLangEl, SOURCE_LANGUAGES, settings.sourceLang);
+  enabledEl.checked = settings.enabled;
+  fontSizeEl.min = FONT_SIZE_MIN;
+  fontSizeEl.max = FONT_SIZE_MAX;
+  fontSizeEl.value = settings.fontSize;
   fontSizeValEl.textContent = `${settings.fontSize}%`;
-  hideOriginalEl.checked  = settings.hideOriginal;
+  for (const el of modeEls) el.checked = el.value === settings.displayMode;
 
-  // ── Event listeners ──
-  enabledEl.addEventListener('change', () => {
-    save({ enabled: enabledEl.checked });
-    renderStatus(null, enabledEl.checked);
+  // Event listeners – every change is persisted; content scripts react via storage.onChanged.
+  enabledEl.addEventListener('change', async () => {
+    await saveSettings({ enabled: enabledEl.checked });
+    renderStatus(await queryActiveTabStatus(), enabledEl.checked);
   });
-
-  langEl.addEventListener('change', () => save({ lang: langEl.value }));
-
-  sourceLangEl.addEventListener('change', () => save({ sourceLang: sourceLangEl.value }));
-
+  langEl.addEventListener('change', () => saveSettings({ lang: langEl.value }));
+  sourceLangEl.addEventListener('change', () => saveSettings({ sourceLang: sourceLangEl.value }));
   fontSizeEl.addEventListener('input', () => {
     fontSizeValEl.textContent = `${fontSizeEl.value}%`;
   });
-  fontSizeEl.addEventListener('change', () => {
-    save({ fontSize: Number(fontSizeEl.value) });
+  fontSizeEl.addEventListener('change', () => saveSettings({ fontSize: Number(fontSizeEl.value) }));
+  for (const el of modeEls) {
+    el.addEventListener('change', () => el.checked && saveSettings({ displayMode: el.value }));
+  }
+
+  // Keep the popup in sync if settings change elsewhere (e.g. keyboard shortcut).
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'sync') return;
+    if (changes.displayMode) {
+      for (const el of modeEls) el.checked = el.value === changes.displayMode.newValue;
+    }
+    if (changes.enabled) enabledEl.checked = changes.enabled.newValue;
   });
 
-  hideOriginalEl.addEventListener('change', () => {
-    save({ hideOriginal: hideOriginalEl.checked });
-  });
-
-  // ── Initial status ──
-  const status = await queryActiveTabStatus();
-  renderStatus(status, settings.enabled);
+  renderShortcuts();
+  renderStatus(await queryActiveTabStatus(), settings.enabled);
 });

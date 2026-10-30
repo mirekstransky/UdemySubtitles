@@ -1,7 +1,7 @@
 # Udemy Subtitle Translate
 
-Chrome extension (Manifest V3) pro zobrazení překladu titulků přímo ve videu na [udemy.com](https://udemy.com).  
-Originální text titulku zůstane – překlad se zobrazí pod ním jako overlay.
+Chrome extension (Manifest V3) pro zobrazení překladu titulků přímo ve videu na [udemy.com](https://udemy.com).
+Dva režimy zobrazení: **Originál + překlad** (pod sebou) nebo **Pouze překlad**.
 
 ## Instalace (vývojářský mód)
 
@@ -10,49 +10,60 @@ Originální text titulku zůstane – překlad se zobrazí pod ním jako overla
 3. Klikněte **Load unpacked** a vyberte složku `UdemySubtitles`
 4. Ikona rozšíření se objeví v toolbaru
 
+Po aktualizaci rozšíření (tlačítko ⟳ v `chrome://extensions`) obnovte otevřené Udemy karty (F5).
+
 ## Použití
 
 1. Otevřete libovolný Udemy kurz a zapněte titulky v přehrávači (ikona CC)
-2. Klikněte na ikonu rozšíření → nastavte cílový jazyk (výchozí: čeština)
-3. Překlad se zobrazuje automaticky pod Udemy titulky
+2. Klikněte na ikonu rozšíření → zvolte režim zobrazení a cílový jazyk (výchozí: čeština)
+3. Titulky se zobrazují automaticky; režim lze přepínat i za běhu klávesovou zkratkou
 
 ## Nastavení (popup)
 
 | Volba | Popis |
 |---|---|
-| Toggle (vpravo nahoře) | Zapnout / vypnout překlad bez reloadu stránky |
+| Toggle (vpravo nahoře) | Zapnout / vypnout překlad bez reloadu stránky (vypnuto = původní Udemy titulky) |
+| Zobrazení titulků | **Originál + překlad** nebo **Pouze překlad** |
 | Přeložit do | Cílový jazyk překladu |
 | Zdrojový jazyk | Jazyk titulků ve videu (auto = detekovat automaticky) |
-| Velikost překladu | Relativní velikost písma overlay (60 – 200 %) |
+| Velikost titulků | Relativní velikost písma (60 – 200 %) |
+
+## Klávesové zkratky
+
+| Zkratka | Akce |
+|---|---|
+| `Alt+T` | Přepnout zobrazení originál + překlad ↔ pouze překlad |
+| `Alt+Shift+T` | Zapnout / vypnout překlad |
+
+Zkratky lze změnit na `chrome://extensions/shortcuts` (odkaz je i v popupu).
 
 ## Jak to funguje
 
-- Content script sleduje element `[class^="captions-display--captions-cue-text--"]` pomocí `MutationObserver`
-- Při změně textu titulku odešle GET požadavek na Google Translate (`gtx` neoficiální endpoint)
-- Výsledek překladu zobrazí v absolutně pozicovaném overlay divu uvnitř video kontejneru
-- Při navigaci mezi lekcemi (SPA) se overlay automaticky resetuje
+- Content script sleduje DOM pomocí `MutationObserver` (změny se slučují do jednoho zpracování za 50 ms) a čte text prvku `[data-purpose="captions-cue-text"]` (s fallbacky na třídy CSS modulů).
+- Dokud je rozšíření zapnuté, **nativní Udemy titulek se skryje přes CSS** (`html.ust-active …{display:none}`) a rozšíření vykreslí vlastní box se dvěma řádky – originálem a překladem. Na obrazovce je tak vždy jen jeden prvek a titulky se nemůžou překrývat. Režim „Pouze překlad" jen skryje řádek s originálem.
+- Překlad se vyžádá přes background service worker (kvůli CORS), výsledky se cachují v rámci karty (LRU, 500 položek). Odpovědi, které dorazí pozdě pro už neaktuální titulek, se ignorují.
+- Nastavení je v `chrome.storage.sync`; změny (z popupu i zkratek) se projeví okamžitě přes `storage.onChanged`.
+- Při navigaci mezi lekcemi (SPA) se stav automaticky resetuje.
 
 ## Technická omezení
 
 - **Neoficiální Google Translate API** (`translate.googleapis.com/translate_a/single?client=gtx`): endpoint není zdokumentován, může být omezen rate limitem nebo zablokován bez předchozího upozornění. Není určen pro produkční použití.
-- **Pozice overlay**: fixní `bottom: 7%` uvnitř video kontejneru – může se vizuálně překrývat s Udemy titulky nebo s ovládacími prvky přehrávače v závislosti na verzi UI.
-- **Selektory**: Udemy používá CSS moduly s hash suffixem (např. `captions-display--captions-cue-text--Xe4H2`). Prefix je dlouhodobě stabilní, ale při velkém redesignu UI může přestat fungovat.
-- **Jedno video na stránce**: rozšíření cílí na první nalezený prvek s odpovídající třídou; stránky s více videi (výjimečné) nejsou plně testovány.
+- **Selektory**: Udemy používá CSS moduly s hash suffixem. Primární selektor je atribut `data-purpose`, při velkém redesignu UI může přestat fungovat.
+- **Jedno video na stránce**: rozšíření cílí na první nalezený titulek.
 
 ## Struktura projektu
 
 ```
 UdemySubtitles/
-├── manifest.json        # MV3 manifest
-├── content.js           # Hlavní content script (MutationObserver + překlad)
-├── popup.html           # UI popupu
-├── popup.js             # Logika popupu
-├── images/
-│   ├── icon16.png
-│   ├── icon48.png
-│   └── icon128.png
+├── manifest.json        # MV3 manifest (content scripts, commands, permissions)
+├── shared.js            # Sdílené konstanty, výchozí nastavení, load/save (background, content, popup)
+├── background.js        # Service worker: překlad, klávesové zkratky, migrace nastavení
+├── content.js           # Content script: detekce titulků, overlay, cache
+├── content.css          # Skrytí nativních titulků + styl overlay
+├── popup.html / .css / .js  # UI popupu
+├── images/              # Ikony
 ├── generate_icons.js    # Pomocný skript: node generate_icons.js
-└── generate_icons.py    # Alternativa pro Python (pokud je dostupný)
+└── generate_icons.py    # Alternativa pro Python
 ```
 
 ## Ladění
@@ -60,6 +71,8 @@ UdemySubtitles/
 Otevřete DevTools na Udemy stránce → Console → filtrujte `[UST]`:
 
 ```
-[UST] Udemy Subtitle Translate v1.0.0 loaded
-[UST] Translation error: HTTP 429     ← rate limit
+[UST] Udemy Subtitle Translate v1.1.0 loaded
+[UST] translation error: HTTP 429     ← rate limit
 ```
+
+Service worker: `chrome://extensions` → u rozšíření odkaz **service worker**.

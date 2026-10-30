@@ -1,234 +1,240 @@
 'use strict';
 
-// ─── Selectors ─────────────────────────────────────────────────────────────────
-// Udemy uses CSS modules – class names have an unpredictable module prefix and hash suffix.
-// Actual element (confirmed live): class="captions-display-module--captions-cue-text--KMBV6"
-//                                  data-purpose="captions-cue-text"
-// Primary selector uses the stable data-purpose attribute; class*= variants are fallbacks.
-const SEL_CAPTION = [
-  '[data-purpose="captions-cue-text"]',   // most stable – Udemy data attribute
-  '[class*="captions-cue-text"]',         // covers any module-prefix variant
-  '[class^="well--text--"]',
-  '[class*=" well--text--"]',
-];
-const SEL_VIDEO = [
-  '[class*="video-player--video-player--"]',
-  '[class*="video-player-module--video-player--"]',
-  "[id^='playerId__'] video",
-  'video',
-].join(', ');
-// Container: use class*= so it matches both "video-player--container--" and
-// "video-player-module--container--" (same -module- shift seen in captions).
-const SEL_CONTAINER =
-  '[class*="video-player--container--"], [class*="video-player-module--container--"]';
-const OVERLAY_ID = 'ust-overlay';
+// Content script for udemy.com.
+//
+// Flow:
+//   1. A MutationObserver notices caption changes (coalesced into one sync per tick).
+//   2. sync() reads the native caption text (hidden via content.css while active).
+//   3. The extension renders its own overlay with the original line and/or the
+//      translation, depending on settings.displayMode.
+//   4. Translations are fetched via the background worker and cached per tab.
 
-// ─── State ─────────────────────────────────────────────────────────────────────
-let cfg = { lang: 'cs', sourceLang: 'auto', fontSize: 110, enabled: true, hideOriginal: false };
-// lastCaption: text for which translation was actually displayed (updated after success)
-let lastCaption = '';
-// pendingText: latest text seen by the MutationObserver (may be ahead of lastCaption)
-let pendingText = '';
-let isTranslating = false;
-let debounceTimer = null;
+(() => {
+  if (globalThis.__UST_CONTENT_LOADED) return;
+  globalThis.__UST_CONTENT_LOADED = true;
 
-// ─── Settings ──────────────────────────────────────────────────────────────────
-chrome.storage.sync.get(
-  { lang: 'cs', sourceLang: 'auto', fontSize: 110, enabled: true, hideOriginal: false },
-  result => { cfg = result; }
-);
+  const { LOG_PREFIX, DEFAULTS, MESSAGES, normalizeSettings, loadSettings } = globalThis.UST;
 
-chrome.storage.onChanged.addListener(changes => {
-  for (const [k, { newValue }] of Object.entries(changes)) cfg[k] = newValue;
+  // ─── Constants ───────────────────────────────────────────────────────────────
+  // Udemy uses CSS modules with hashed class names. The data-purpose attribute is
+  // the most stable hook; the class-based selectors are fallbacks.
+  const CAPTION_SELECTORS = [
+    '[data-purpose="captions-cue-text"]',
+    '[class*="captions-cue-text"]',
+    '[class^="well--text--"]',
+    '[class*=" well--text--"]',
+  ];
+  const ACTIVE_CLASS = 'ust-active';
+  const OVERLAY_CLASS = 'ust-overlay';
+  const NATIVE_ATTR = 'data-ust-native'; // hidden by content.css while active
+  const SYNC_DELAY_MS = 50;
+  const CACHE_LIMIT = 500;
 
-  // Apply overlay visibility / font size changes immediately
-  const overlay = document.getElementById(OVERLAY_ID);
-  if (overlay) {
-    overlay.style.fontSize = `${cfg.fontSize}%`;
-    if (!cfg.enabled) {
-      overlay.textContent = '';
-      overlay.style.display = 'none';
-    } else {
-      overlay.style.display = '';
+  // ─── State ───────────────────────────────────────────────────────────────────
+  const state = {
+    cfg: { ...DEFAULTS },
+    original: '',      // caption text currently displayed
+    translation: '',   // translation of `original` ('' while pending)
+    href: location.href,
+    overlay: null,
+    syncScheduled: false,
+  };
+
+  const cache = new Map();     // key -> translation (insertion order = LRU order)
+  const inFlight = new Set();  // keys being translated right now
+
+  // ─── Helpers ─────────────────────────────────────────────────────────────────
+  const normalizeText = text => (text ?? '').replace(/\s+/g, ' ').trim();
+
+  const cacheKey = text => `${state.cfg.sourceLang}|${state.cfg.lang}|${text}`;
+
+  function cacheGet(key) {
+    if (!cache.has(key)) return undefined;
+    const value = cache.get(key);
+    cache.delete(key); // refresh LRU position
+    cache.set(key, value);
+    return value;
+  }
+
+  function cacheSet(key, value) {
+    cache.set(key, value);
+    if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value);
+  }
+
+  function findCaption() {
+    for (const selector of CAPTION_SELECTORS) {
+      const el = document.querySelector(selector);
+      if (el?.textContent.trim()) return el;
     }
+    return null;
   }
 
-  // Apply hideOriginal change to the currently visible caption element immediately
-  if ('hideOriginal' in changes || 'enabled' in changes) {
-    const captionEl = findCaption();
-    if (captionEl) {
-      applyOriginalVisibility(captionEl);
-    }
-  }
-});
-
-// ─── Translation ───────────────────────────────────────────────────────────────
-// In MV3, fetch() from a content script runs with the PAGE's origin (udemy.com),
-// so cross-origin requests to translate.googleapis.com are blocked by CORS.
-// We delegate the fetch to the background service worker via messaging.
-async function gtxTranslate(text) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(
-      { method: 'translate', text, sourceLang: cfg.sourceLang, targetLang: cfg.lang },
-      response => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        if (response?.error) {
-          reject(new Error(response.error));
-          return;
-        }
-        resolve(response?.translated ?? '');
-      }
-    );
-  });
-}
-
-// ─── Overlay element ───────────────────────────────────────────────────────────
-// Overlay is injected as a sibling inside captionEl.parentElement.
-// The Udemy caption parent is already positioned correctly over the video and
-// does NOT have overflow:hidden – so this avoids the clipping issue that occurs
-// when appending to the video container itself.
-function getOrCreateOverlay(captionEl) {
-  const parent = captionEl.parentElement;
-  let el = parent.querySelector(`#${OVERLAY_ID}`);
-  if (el) return el;
-
-  el = document.createElement('div');
-  el.id = OVERLAY_ID;
-  Object.assign(el.style, {
-    display: 'block',
-    color: '#ffffff',
-    fontSize: `${cfg.fontSize}%`,
-    fontFamily: "'Segoe UI', Arial, sans-serif",
-    fontWeight: '600',
-    textAlign: 'center',
-    textShadow: '0 0 5px #000, 0 0 5px #000',
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    padding: '2px 10px',
-    borderRadius: '4px',
-    lineHeight: '1.5',
-    pointerEvents: 'none',
-    marginTop: '4px',
-    whiteSpace: 'pre-wrap',
-  });
-  parent.appendChild(el);
-  return el;
-}
-
-// ─── Original caption visibility ──────────────────────────────────────────────
-// Hides or restores the native Udemy caption text based on cfg.hideOriginal.
-function applyOriginalVisibility(captionEl) {
-  if (!captionEl) return;
-  captionEl.style.display = (cfg.enabled && cfg.hideOriginal) ? 'none' : '';
-}
-
-// ─── Caption detection ─────────────────────────────────────────────────────────
-function findCaption() {
-  for (const sel of SEL_CAPTION) {
-    const el = document.querySelector(sel);
-    if (el?.textContent.trim()) return el;
-  }
-  return null;
-}
-
-// ─── Main handler ──────────────────────────────────────────────────────────────
-async function handleCaptionChange() {
-  if (!cfg.enabled) return;
-
-  const captionEl = findCaption();
-  const text = captionEl?.textContent.trim() ?? '';
-
-  if (!text) {
-    lastCaption = '';
-    pendingText = '';
-    const overlay = document.getElementById(OVERLAY_ID);
-    if (overlay) overlay.textContent = '';
-    // Restore original caption visibility when captions disappear between cues
-    if (captionEl) captionEl.style.display = '';
-    return;
+  function setText(el, text) {
+    if (el.textContent !== text) el.textContent = text;
   }
 
-  // Always track the latest text seen.
-  pendingText = text;
-
-  // Already displayed a translation for this exact text.
-  if (text === lastCaption) return;
-
-  // A translation is in flight. The finally block will re-trigger once it finishes
-  // and pendingText will carry the latest text at that point.
-  if (isTranslating) return;
-
-  isTranslating = true;
-  const capturedText = text;
-
-  try {
-    console.log('[UST] translating:', capturedText.slice(0, 80));
-    const translated = await gtxTranslate(capturedText);
-    console.log('[UST] translated:', translated?.slice(0, 80));
-    if (translated) {
-      lastCaption = capturedText;
-      // Re-query caption element – it may have been replaced while awaiting.
-      const freshCaption = findCaption();
-      if (freshCaption) {
-        const overlay = getOrCreateOverlay(freshCaption);
-        overlay.textContent = translated;
-        overlay.style.display = cfg.enabled ? '' : 'none';
-        // Show/hide the original Udemy caption text based on mode
-        applyOriginalVisibility(freshCaption);
-      }
-    }
-  } catch (err) {
-    console.warn('[UST] Translation error:', err.message);
-  } finally {
-    isTranslating = false;
-    // If caption changed while we were translating, immediately process the latest.
-    if (pendingText !== capturedText) {
-      setTimeout(handleCaptionChange, 0);
-    }
-  }
-}
-
-function scheduleCaptionCheck() {
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(handleCaptionChange, 100);
-}
-
-// ─── MutationObserver ──────────────────────────────────────────────────────────
-// Observe the whole document so we catch dynamic player/caption insertion on SPA nav.
-const observer = new MutationObserver(scheduleCaptionCheck);
-observer.observe(document.documentElement, {
-  childList: true,
-  subtree: true,
-  characterData: true,
-});
-
-// ─── SPA navigation detection ──────────────────────────────────────────────────
-// Udemy is a React SPA – the URL changes without a full page reload.
-let lastHref = location.href;
-setInterval(() => {
-  if (location.href === lastHref) return;
-  lastHref = location.href;
-  lastCaption = '';
-  const el = document.getElementById(OVERLAY_ID);
-  if (el) {
-    el.textContent = '';
-    el.remove(); // Force re-creation in the new player container
-  }
-}, 1000);
-
-// ─── Messages from popup ───────────────────────────────────────────────────────
-chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
-  if (req.method === 'getStatus') {
-    sendResponse({
-      enabled: cfg.enabled,
-      captionFound: !!findCaption(),
-      lastCaption,
+  // ─── Translation ─────────────────────────────────────────────────────────────
+  async function translate(text) {
+    const res = await chrome.runtime.sendMessage({
+      type: MESSAGES.TRANSLATE,
+      text,
+      sourceLang: state.cfg.sourceLang,
+      targetLang: state.cfg.lang,
     });
-    return true;
+    if (!res) throw new Error('No response from background worker');
+    if (res.error) throw new Error(res.error);
+    return res.translated ?? '';
   }
-});
 
-window.__UST_LOADED = true;
-console.log('[UST] Udemy Subtitle Translate v1.0.0 loaded');
+  async function requestTranslation(text) {
+    const key = cacheKey(text);
+    if (inFlight.has(key)) return;
+    inFlight.add(key);
+
+    try {
+      const translated = await translate(text);
+      if (!translated) return;
+      cacheSet(key, translated);
+      // Ignore stale responses: caption or language may have changed meanwhile.
+      if (state.original === text && cacheKey(text) === key) {
+        state.translation = translated;
+        render(findCaption());
+      }
+    } catch (err) {
+      console.warn(`${LOG_PREFIX} translation error:`, err.message);
+    } finally {
+      inFlight.delete(key);
+    }
+  }
+
+  // ─── Overlay ─────────────────────────────────────────────────────────────────
+  // The overlay lives next to the native caption, inside Udemy's caption container,
+  // which is already positioned over the video and not clipped. If Udemy re-renders
+  // that container, the overlay is re-attached on the next sync.
+  function ensureOverlay(host) {
+    if (state.overlay?.parentElement === host) return state.overlay;
+
+    state.overlay?.remove();
+    const overlay = document.createElement('div');
+    overlay.className = OVERLAY_CLASS;
+
+    const original = document.createElement('div');
+    original.className = 'ust-line ust-line--original';
+    const translation = document.createElement('div');
+    translation.className = 'ust-line ust-line--translation';
+
+    overlay.append(original, translation);
+    host.append(overlay);
+    state.overlay = overlay;
+    return overlay;
+  }
+
+  function removeOverlay() {
+    state.overlay?.remove();
+    state.overlay = null;
+  }
+
+  function render(captionEl) {
+    if (!captionEl?.parentElement || !state.original) {
+      if (state.overlay) state.overlay.hidden = true;
+      return;
+    }
+
+    const overlay = ensureOverlay(captionEl.parentElement);
+    const [originalEl, translationEl] = overlay.children;
+
+    overlay.dataset.mode = state.cfg.displayMode;
+    overlay.style.setProperty('--ust-font-size', `${state.cfg.fontSize}%`);
+    setText(originalEl, state.original);
+    setText(translationEl, state.translation);
+    overlay.hidden = false;
+  }
+
+  // ─── Sync loop ───────────────────────────────────────────────────────────────
+  function resetCaption() {
+    state.original = '';
+    state.translation = '';
+  }
+
+  function sync() {
+    state.syncScheduled = false;
+
+    // Udemy is a SPA – lecture changes don't reload the page.
+    if (location.href !== state.href) {
+      state.href = location.href;
+      resetCaption();
+      removeOverlay();
+    }
+
+    const { enabled } = state.cfg;
+    document.documentElement.classList.toggle(ACTIVE_CLASS, enabled);
+
+    if (!enabled) {
+      resetCaption();
+      removeOverlay();
+      return;
+    }
+
+    const captionEl = findCaption();
+    const text = normalizeText(captionEl?.textContent);
+    // Mark the native caption so content.css hides it (no-op if already marked).
+    if (captionEl && !captionEl.hasAttribute(NATIVE_ATTR)) captionEl.setAttribute(NATIVE_ATTR, '');
+
+    if (text !== state.original) {
+      state.original = text;
+      state.translation = text ? cacheGet(cacheKey(text)) ?? '' : '';
+      if (text && !state.translation) requestTranslation(text);
+    }
+
+    render(captionEl);
+  }
+
+  // Coalesce bursts of mutations (the player mutates the DOM constantly) into a
+  // single sync. Unlike a reset-on-every-event debounce, this cannot starve.
+  function scheduleSync() {
+    if (state.syncScheduled) return;
+    state.syncScheduled = true;
+    setTimeout(sync, SYNC_DELAY_MS);
+  }
+
+  // ─── Settings ────────────────────────────────────────────────────────────────
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'sync') return;
+
+    const next = { ...state.cfg };
+    for (const [key, { newValue }] of Object.entries(changes)) next[key] = newValue;
+    state.cfg = normalizeSettings(next);
+
+    // Language change → force re-translation of the current caption.
+    if ('lang' in changes || 'sourceLang' in changes) resetCaption();
+
+    scheduleSync();
+  });
+
+  // ─── Popup status ────────────────────────────────────────────────────────────
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg?.type !== MESSAGES.GET_STATUS) return false;
+    sendResponse({
+      enabled: state.cfg.enabled,
+      displayMode: state.cfg.displayMode,
+      captionFound: Boolean(findCaption()),
+    });
+    return false; // responded synchronously
+  });
+
+  // ─── Init ────────────────────────────────────────────────────────────────────
+  // Settings are loaded before observing, so the first caption already uses the
+  // user's language and display mode.
+  loadSettings()
+    .then(cfg => {
+      state.cfg = cfg;
+      new MutationObserver(scheduleSync).observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+      scheduleSync();
+      console.log(`${LOG_PREFIX} Udemy Subtitle Translate v${chrome.runtime.getManifest().version} loaded`);
+    })
+    .catch(err => console.warn(`${LOG_PREFIX} init failed:`, err.message));
+})();

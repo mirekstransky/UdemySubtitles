@@ -1,0 +1,65 @@
+/*
+ * Udemy Subtitle Translate – content styles.
+ *
+ * While the extension is active (html.ust-active) the native Udemy caption text is
+ * hidden and the extension renders BOTH lines (original + translation) itself in a
+ * single stacked box. This is what prevents the native and translated captions from
+ * overlapping: there is only one thing on screen, and its layout is ours.
+ *
+ * [data-ust-native] is set by content.js on whichever element it detected as the
+ * caption (covers the fallback selectors without hiding unrelated containers).
+ *
+ * The caption element stays in the DOM (only display:none), so its text is still
+ * readable by the content script.
+ */
+
+html.ust-active [data-purpose="captions-cue-text"],
+html.ust-active [data-ust-native] {
+  display: none !important;
+}
+
+.ust-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  font-size: var(--ust-font-size, 110%);
+  font-family: 'Segoe UI', Arial, sans-serif;
+  line-height: 1.4;
+  text-align: center;
+  pointer-events: none;
+}
+
+.ust-overlay[hidden] {
+  display: none !important;
+}
+
+.ust-line {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 10px;
+  border-radius: 4px;
+  background-color: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  text-shadow: 0 0 4px #000;
+  white-space: pre-wrap;
+}
+
+.ust-line:empty {
+  display: none;
+}
+
+.ust-line--original {
+  font-size: 0.9em;
+  font-weight: 400;
+  color: #e6e6e6;
+}
+
+.ust-line--translation {
+  font-weight: 600;
+}
+
+.ust-overlay[data-mode="translation"] .ust-line--original {
+  display: none;
+}
