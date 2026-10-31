@@ -64,7 +64,17 @@
       </div>
     </div>
 
-    <div class="field">
+    <fieldset class="field">
+      <legend class="field-label">Synchronizace</legend>
+      <div class="segmented" role="radiogroup">
+        <input type="radio" name="syncMode" id="syncVideo" value="video" />
+        <label for="syncVideo" title="Vlastní časování podle videa – lze posunout v čase">Podle videa</label>
+        <input type="radio" name="syncMode" id="syncUdemy" value="udemy" />
+        <label for="syncUdemy" title="Zobrazuje se, když titulek ukáže Udemy (respektuje CC a jeho pozici)">Podle Udemy</label>
+      </div>
+    </fieldset>
+
+    <div class="field" id="timingField">
       <div class="field-head">
         <label class="field-label" for="timingOffset">Časování</label>
         <button type="button" class="link-btn" id="resetTiming">Výchozí</button>
@@ -75,7 +85,43 @@
         <span class="range-hint" aria-hidden="true">později</span>
         <output class="range-val" id="timingOffsetVal" for="timingOffset"></output>
       </div>
+      <p class="field-note" id="timingNote" hidden>Časování lze posunout jen v režimu „Podle videa“.</p>
     </div>
+
+    <details class="section">
+      <summary class="field-label">Vzhled</summary>
+      <div class="section-body">
+        <div class="color-row">
+          <label for="textColor">Překlad</label>
+          <input type="color" id="textColor" />
+        </div>
+        <div class="color-row">
+          <label for="originalColor">Originál</label>
+          <input type="color" id="originalColor" />
+        </div>
+        <div class="color-row">
+          <label for="bgColor">Pozadí</label>
+          <input type="color" id="bgColor" />
+        </div>
+        <div class="range-row">
+          <label class="range-hint" for="bgOpacity">průhlednost pozadí</label>
+          <input type="range" id="bgOpacity" min="0" max="100" step="5" />
+          <output class="range-val" id="bgOpacityVal" for="bgOpacity"></output>
+        </div>
+        <button type="button" class="link-btn" id="resetAppearance">Výchozí vzhled</button>
+      </div>
+    </details>
+
+    <details class="section">
+      <summary class="field-label">Titulky lekce</summary>
+      <div class="section-body">
+        <div class="button-row">
+          <button type="button" class="btn" data-export="srt">Stáhnout SRT</button>
+          <button type="button" class="btn" data-export="txt">Stáhnout TXT</button>
+        </div>
+        <p class="field-note" id="exportNote">Originál + překlad aktuální lekce.</p>
+      </div>
+    </details>
 
     <div class="shortcuts" id="shortcuts"></div>
   </main>

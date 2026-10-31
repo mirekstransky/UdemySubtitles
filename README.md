@@ -28,8 +28,12 @@ Po aktualizaci rozšíření (tlačítko ⟳ v `chrome://extensions`) obnovte ot
 | Přeložit do | Cílový jazyk překladu |
 | Zdrojový jazyk | Jazyk titulků ve videu (auto = detekovat automaticky) |
 | Velikost titulků | Relativní velikost písma (60 – 200 %) |
-| Časování | Posun titulků v čase (−3 až +3 s, krok 0,1 s; záporné = dříve). Funguje jen pro titulky ze souboru (viz níže). |
+| Synchronizace | **Podle videa** (výchozí): vlastní časování podle `video.currentTime`, lze posunout v čase. **Podle Udemy**: titulek se ukáže, když ho zobrazí Udemy (respektuje vypnutí CC a pozici titulků Udemy); překlad se jen dohledá v předem přeloženém souboru. |
+| Časování | Posun titulků v čase (−3 až +3 s, krok 0,1 s; záporné = dříve). Jen v režimu synchronizace **Podle videa**. |
 | Svislá pozice | Posun titulků v ose Y v % výšky videa (−10 až +80 %, kladné = nahoru, 0 = výchozí pozice Udemy). Přizpůsobí se i fullscreenu. Tlačítko **Výchozí** vrátí na 0. |
+| Vzhled (rozbalovací) | Barva překladu, barva originálu, barva a průhlednost pozadí. **Výchozí vzhled** vrátí původní hodnoty. |
+| Titulky lekce (rozbalovací) | **Stáhnout SRT / TXT** – dvojjazyčné titulky aktuální lekce (originál + překlad pod sebou). SRT obsahuje časy, TXT jen text. Nepřeložené řádky jsou jen v originále. |
+| Stav (dole) | Zdroj a jazyk titulků, průběh překladu; při chybě její popis (např. omezení počtu požadavků). |
 
 ## Klávesové zkratky
 
@@ -54,11 +58,13 @@ Odkud se soubor titulků (`.vtt`) bere – použije se první dostupný zdroj:
 2. **Požadavek přehrávače** – pokud API nejde použít, zachytí se `.vtt`, který stáhl přehrávač (`PerformanceObserver`).
 
 Soubor stáhne background worker a content script ho rozparsuje.
-- Titulky se **překládají dopředu po dávkách** (až 40 titulků / 1 500 znaků na jeden požadavek), vždy od aktuální pozice ve videu. Lekce se tak přeloží několika požadavky místo stovek.
-- Zobrazení řídí `video.currentTime` v každém snímku (`requestAnimationFrame`) – překlad se ukáže současně s hlasem. Posun **Časování** se přičítá k času videa.
+- Titulky se **překládají dopředu po dávkách** (až 100 titulků / 4 500 znaků), vždy od aktuální pozice ve videu. Dávka jde na Google jedním požadavkem **POST** (text v těle); kdyby ho Google odmítl, background worker přejde na GET a dávku rozdělí na menší části (~1 800 znaků kvůli délce URL).
+- Chyby se rozlišují (omezení počtu požadavků 429, síť/timeout, HTTP, nečitelná odpověď). Dávky se opakují s rostoucí pauzou (2, 4, 8… s; po 429 15 s), jednotlivé řádky nejdřív za 5 s. Poslední chyba se ukáže ve stavu popupu.
+- **Synchronizace „Podle videa“**: zobrazení řídí `video.currentTime` v každém snímku (`requestAnimationFrame`) – překlad se ukáže současně s hlasem. Posun **Časování** se přičítá k času videa.
+- **Synchronizace „Podle Udemy“**: zobrazuje se podle titulku, který ukáže Udemy; jeho text se dohledá v souboru (porovnání bez mezer a velikosti písmen, protože Udemy může řádky spojit) a použije se předem připravený překlad. Když se text nenajde, přeloží se za běhu.
 - Po přetočení do ještě nepřeloženého místa se aktuální titulek přeloží okamžitě samostatně.
 - Overlay je umístěný přímo nad videem; pozice i velikost písma se počítají z výšky videa (stejný vzhled i ve fullscreenu).
-- Při vypnutí CC v přehrávači se titulky ze souboru dál zobrazují – vypínají se přepínačem rozšíření (`Alt+Shift+T`).
+- V režimu „Podle videa“ se titulky ze souboru zobrazují i při vypnutém CC v přehrávači – vypínají se přepínačem rozšíření (`Alt+Shift+T`). V režimu „Podle Udemy“ CC titulky skutečně vypne.
 
 ### Titulky ze stránky (záloha)
 
@@ -98,7 +104,7 @@ UdemySubtitles/
 Otevřete DevTools na Udemy stránce → Console → filtrujte `[UdemySubtitles]`:
 
 ```
-[UdemySubtitles] Udemy Subtitle Translate v1.5.0 loaded
+[UdemySubtitles] Udemy Subtitle Translate v1.6.0 loaded
 [UdemySubtitles] caption list (API): en_US, es_ES*     ← * = automaticky generované
 [UdemySubtitles] subtitle file loaded (api, en_US): 182 cues   ← titulky ze souboru aktivní
 [UdemySubtitles] translation error: HTTP 429     ← rate limit

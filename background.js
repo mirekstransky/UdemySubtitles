@@ -27,35 +27,91 @@ const {
 const log = createLogger();
 
 const GTX_ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
-const MAX_QUERY_CHARS = 2000;
-const REQUEST_TIMEOUT_MS = 8000;
+const REQUEST_TIMEOUT_MS = 10000;
+const MAX_POST_CHARS = 5000; // text per request when sent in the POST body
+const MAX_GET_CHARS = 1800;  // text per request when it has to go into the URL
+
+// POST keeps long batches out of the URL. If the endpoint ever rejects it, the
+// worker switches to GET (with smaller chunks) for the rest of its lifetime.
+let postSupported = true;
+
+/** Error with a machine-readable `code`: rate_limit | network | http | parse | post_unsupported */
+class TranslateError extends Error {
+  constructor(message, code) {
+    super(message);
+    this.code = code;
+  }
+}
 
 // ─── Translation ───────────────────────────────────────────────────────────────
-async function translate({ text, sourceLang, targetLang }) {
-  const url = new URL(GTX_ENDPOINT);
-  url.search = new URLSearchParams({
-    client: 'gtx',
-    sl: sourceLang || 'auto',
-    tl: targetLang,
-    dt: 't',
-    q: text.slice(0, MAX_QUERY_CHARS),
-  }).toString();
+async function gtxRequest({ text, sourceLang, targetLang }, method) {
+  const params = new URLSearchParams({ client: 'gtx', sl: sourceLang || 'auto', tl: targetLang, dt: 't' });
+  const init = { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) };
+  if (method === 'POST') {
+    init.method = 'POST';
+    init.body = new URLSearchParams({ q: text }); // sent as application/x-www-form-urlencoded
+  } else {
+    params.set('q', text);
+  }
 
-  const resp = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  let resp;
+  try {
+    resp = await fetch(`${GTX_ENDPOINT}?${params}`, init);
+  } catch (err) {
+    throw new TranslateError(err.name === 'TimeoutError' ? 'timeout' : err.message, 'network');
+  }
+  if (resp.status === 429) throw new TranslateError('HTTP 429', 'rate_limit');
+  if (!resp.ok) throw new TranslateError(`HTTP ${resp.status}`, 'http');
 
-  const data = await resp.json();
-  if (!Array.isArray(data?.[0])) throw new Error('Unexpected response format');
+  let data;
+  try {
+    data = await resp.json();
+  } catch {
+    throw new TranslateError('invalid JSON', 'parse');
+  }
+  if (!Array.isArray(data?.[0])) throw new TranslateError('Unexpected response format', 'parse');
   return data[0].map(chunk => chunk?.[0] ?? '').join('');
 }
 
+async function translate(req) {
+  if (postSupported) {
+    try {
+      return await gtxRequest(req, 'POST');
+    } catch (err) {
+      if (err.code !== 'http') throw err; // 429, network… are not about the method
+      postSupported = false;
+      log.info(`POST rejected (${err.message}), switching to GET`);
+      if (req.text.length > MAX_GET_CHARS) {
+        throw new TranslateError('POST not supported, text too long for GET', 'post_unsupported');
+      }
+    }
+  }
+  return gtxRequest({ ...req, text: req.text.slice(0, MAX_GET_CHARS) }, 'GET');
+}
+
+/** Splits texts into consecutive groups whose joined length fits `limit`. */
+function chunkByChars(texts, limit) {
+  const chunks = [];
+  let current = [];
+  let size = 0;
+  for (const text of texts) {
+    if (current.length && size + text.length + 1 > limit) {
+      chunks.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(text);
+    size += text.length + 1;
+  }
+  if (current.length) chunks.push(current);
+  return chunks;
+}
+
 /**
- * Translates many short texts with as few requests as possible: the texts are joined
- * with newlines (which the endpoint preserves) and split back. If the line count does
- * not match, falls back to translating each text separately.
+ * One request for many short texts: joined with newlines (preserved by the
+ * endpoint) and split back. On a line-count mismatch each text goes separately.
  */
-async function translateBatch({ texts, sourceLang, targetLang }) {
-  const opts = { sourceLang, targetLang };
+async function translateChunk(texts, opts) {
   const lines = (await translate({ ...opts, text: texts.join('\n') })).split('\n');
   if (lines.length === texts.length) return lines.map(line => line.trim());
 
@@ -63,6 +119,23 @@ async function translateBatch({ texts, sourceLang, targetLang }) {
   const result = [];
   for (const text of texts) result.push(await translate({ ...opts, text }));
   return result;
+}
+
+async function translateBatch({ texts, sourceLang, targetLang }) {
+  const opts = { sourceLang, targetLang };
+  const run = async () => {
+    const chunks = chunkByChars(texts, postSupported ? MAX_POST_CHARS : MAX_GET_CHARS);
+    log.debug(`batch: ${texts.length} texts in ${chunks.length} request(s) via ${postSupported ? 'POST' : 'GET'}`);
+    const result = [];
+    for (const chunk of chunks) result.push(...(await translateChunk(chunk, opts)));
+    return result;
+  };
+  try {
+    return await run();
+  } catch (err) {
+    if (err.code === 'post_unsupported') return run(); // re-chunk for GET
+    throw err;
+  }
 }
 
 // ─── Subtitle file ─────────────────────────────────────────────────────────────
@@ -110,7 +183,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       result => sendResponse({ result }),
       err => {
         log.warn(`${msg.type} failed:`, err.message);
-        sendResponse({ error: err.message });
+        sendResponse({ error: err.message, code: err.code ?? 'other' });
       }
     );
   return true; // keep the channel open for the async sendResponse

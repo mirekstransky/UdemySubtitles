@@ -57,8 +57,9 @@ html.ust-active [data-ust-native] {
   max-width: 100%;
   padding: 2px 10px;
   border-radius: 4px;
-  background-color: rgba(0, 0, 0, 0.7);
-  color: #fff;
+  /* Colors come from the settings (content.js sets the custom properties). */
+  background-color: var(--ust-bg, rgba(0, 0, 0, 0.7));
+  color: var(--ust-color, #fff);
   text-shadow: 0 0 4px #000;
   white-space: pre-wrap;
 }
@@ -70,7 +71,7 @@ html.ust-active [data-ust-native] {
 .ust-line--original {
   font-size: 0.9em;
   font-weight: 400;
-  color: #e6e6e6;
+  color: var(--ust-original-color, #e6e6e6);
 }
 
 .ust-line--translation {

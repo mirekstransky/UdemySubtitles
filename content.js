@@ -24,7 +24,8 @@
   if (globalThis.__UST_CONTENT_LOADED) return;
   globalThis.__UST_CONTENT_LOADED = true;
 
-  const { DEFAULTS, MESSAGES, normalizeSettings, loadSettings, createLogger } = globalThis.UST;
+  const { DEFAULTS, MESSAGES, SYNC_MODES, EXPORT_FORMATS, normalizeSettings, loadSettings, createLogger } =
+    globalThis.UST;
   const log = createLogger();
 
   // ─── Constants ───────────────────────────────────────────────────────────────
@@ -44,10 +45,13 @@
   const CACHE_LIMIT = 500;
 
   // Translate-ahead batching (one request per batch).
-  const BATCH_MAX_CHARS = 1500;
-  const BATCH_MAX_CUES = 40;
-  const BATCH_MAX_FAILURES = 3;
-  const BATCH_RETRY_DELAY_MS = 2000;
+  // The background worker splits a batch further if a single request would be too long.
+  const BATCH_MAX_CHARS = 4500;
+  const BATCH_MAX_CUES = 100;
+  const BATCH_MAX_FAILURES = 5;
+  const BATCH_RETRY_DELAY_MS = 2000;  // doubled after each consecutive failure
+  const RATE_LIMIT_DELAY_MS = 15000;  // after HTTP 429
+  const SINGLE_RETRY_DELAY_MS = 5000; // on-demand translation of one line after a failure
 
   // Floating overlay (VTT mode): position and font scale relative to the video.
   const FLOATING_BASE_BOTTOM_PCT = 12;
@@ -61,7 +65,7 @@
     syncScheduled: false,
     rafId: 0,
     // DOM fallback
-    dom: { original: '', translation: '' },
+    dom: { original: '', display: '', translation: '' }, // display = text shown as original
     // VTT source: { id, url, context, locale, label, origin, cues: [{ start, end, text, translation, pending }], translating }
     vtt: null,
     vttId: null,          // identity (lecture|locale) of the file loaded or loading
@@ -74,6 +78,7 @@
     // Video tracking
     video: null,
     videoHeight: 0,
+    lastError: null, // { code, message, at } of the last failed translation (cleared on success)
   };
 
   const cache = new Map();     // DOM mode: key -> translation (insertion order = LRU)
@@ -124,9 +129,16 @@
   async function sendMessage(message) {
     const res = await chrome.runtime.sendMessage(message);
     if (!res) throw new Error('No response from background worker');
-    if (res.error) throw new Error(res.error);
+    if (res.error) throw Object.assign(new Error(res.error), { code: res.code ?? 'other' });
     return res.result;
   }
+
+  function recordError(err) {
+    state.lastError = { code: err.code ?? 'other', message: err.message, at: Date.now() };
+  }
+
+  const clearError = () => (state.lastError = null);
+  const retryDelay = err => (err.code === 'rate_limit' ? RATE_LIMIT_DELAY_MS : SINGLE_RETRY_DELAY_MS);
 
   const translationRequest = extra => ({
     sourceLang: sourceLang(),
@@ -202,6 +214,11 @@
     state.overlay = null;
   }
 
+  function hexToRgba(hex, alpha) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  }
+
   /**
    * @param {object} p
    * @param {Element} p.host       element the overlay is appended to
@@ -215,6 +232,9 @@
     const [originalEl, translationEl] = overlay.children;
 
     overlay.dataset.mode = cfg.displayMode;
+    overlay.style.setProperty('--ust-color', cfg.textColor);
+    overlay.style.setProperty('--ust-original-color', cfg.originalColor);
+    overlay.style.setProperty('--ust-bg', hexToRgba(cfg.bgColor, cfg.bgOpacity / 100));
     if (floating) {
       // Bottom offset and font size are relative to the video, so the layout is
       // identical in a small player and in fullscreen.
@@ -494,7 +514,11 @@
       if (state.vttId !== id) return; // superseded by a newer file meanwhile
       if (!cues.length) throw new Error('no cues in file');
 
-      state.vtt = { id, url, context, locale, label, origin, cues, translating: false };
+      // Text index for the "follow Udemy" sync mode (see cueForCaption).
+      const byText = new Map();
+      for (const cue of cues) if (!byText.has(matchKey(cue.text))) byText.set(matchKey(cue.text), cue);
+
+      state.vtt = { id, url, context, locale, label, origin, cues, byText, translating: false };
       log.info(`subtitle file loaded (${origin}, ${locale ?? '?'}): ${cues.length} cues`);
       translateAhead();
       scheduleSync();
@@ -545,12 +569,17 @@
           // Language changed mid-flight → cues were reset, drop this result.
           if (key === langKey()) batch.forEach((cue, i) => (cue.translation = translations[i] ?? ''));
           failures = 0;
+          clearError();
+          scheduleSync(); // the "follow Udemy" mode picks translations up in sync()
           const done = vtt.cues.filter(c => c.translation !== null).length;
           if (done === vtt.cues.length) log.debug(`all ${done} cues translated`);
         } catch (err) {
           failures++;
-          log.warn('batch translation error:', err.message);
-          await sleep(BATCH_RETRY_DELAY_MS);
+          recordError(err);
+          const delay =
+            err.code === 'rate_limit' ? RATE_LIMIT_DELAY_MS : BATCH_RETRY_DELAY_MS * 2 ** (failures - 1);
+          log.warn(`batch translation error (${err.code}): ${err.message} – retry in ${delay / 1000} s`);
+          await sleep(delay);
         } finally {
           batch.forEach(cue => (cue.pending = false));
         }
@@ -560,6 +589,10 @@
     }
   }
 
+  /** Cue still needs an on-demand translation (not done, not in flight, not backing off). */
+  const needsTranslation = cue =>
+    cue.translation === null && !cue.pending && Date.now() >= (cue.retryAt ?? 0);
+
   /** On-demand translation of a single cue (e.g. after seeking into an untranslated part). */
   async function translateCueNow(cue) {
     const key = langKey();
@@ -568,8 +601,13 @@
     try {
       const translated = await sendMessage(translationRequest({ type: MESSAGES.TRANSLATE, text: cue.text }));
       if (key === langKey()) cue.translation = translated;
+      clearError();
+      scheduleSync();
+      translateAhead(); // resumes the batch loop if it gave up after failures
     } catch (err) {
-      log.warn('translation error:', err.message);
+      recordError(err);
+      cue.retryAt = Date.now() + retryDelay(err);
+      log.warn(`translation error (${err.code}):`, err.message);
     } finally {
       cue.pending = false;
     }
@@ -577,14 +615,23 @@
 
   function resetVttTranslations() {
     if (!state.vtt) return;
-    for (const cue of state.vtt.cues) cue.translation = null;
+    for (const cue of state.vtt.cues) {
+      cue.translation = null;
+      cue.retryAt = 0;
+    }
     translateAhead();
   }
 
   // ─── VTT: render loop ────────────────────────────────────────────────────────
-  function vttReady() {
+  /** A subtitle file for the current lecture is loaded. */
+  function vttLoaded() {
     const { vtt, cfg } = state;
-    return Boolean(cfg.enabled && vtt && vtt.context === contextKey() && document.querySelector('video'));
+    return Boolean(cfg.enabled && vtt && vtt.context === contextKey());
+  }
+
+  /** Subtitles are driven by our own clock (sync mode "video"). */
+  function useClock() {
+    return vttLoaded() && state.cfg.syncMode === SYNC_MODES.VIDEO && Boolean(document.querySelector('video'));
   }
 
   function startClock() {
@@ -598,8 +645,8 @@
 
   function tick() {
     state.rafId = 0;
-    if (!vttReady()) {
-      scheduleSync(); // hand over to the DOM fallback
+    if (!useClock()) {
+      scheduleSync(); // hand over to the DOM-driven mode
       return;
     }
     renderVtt();
@@ -618,19 +665,33 @@
       hideOverlay();
       return;
     }
-    if (cue.translation === null && !cue.pending) translateCueNow(cue);
+    if (needsTranslation(cue)) translateCueNow(cue);
 
     renderOverlay({ host, floating: true, original: cue.text, translation: cue.translation ?? '' });
   }
 
-  // ─── DOM fallback ────────────────────────────────────────────────────────────
+  // ─── DOM-driven display ──────────────────────────────────────────────────────
+  // Used (a) in sync mode "udemy": Udemy decides what is shown and when, the text is
+  // looked up in the pre-translated subtitle file; (b) as a fallback when no subtitle
+  // file is available: each line is translated on demand.
+
+  /** Key for matching on-screen text to file cues: Udemy may join lines without spaces. */
+  const matchKey = text => text.replace(/\s+/g, '').toLowerCase();
+
+  function cueForCaption(text) {
+    return vttLoaded() ? state.vtt.byText.get(matchKey(text)) : undefined;
+  }
+
+  const domRetryAt = new Map(); // cache key -> timestamp before which no retry is made
+
   async function requestDomTranslation(text) {
     const key = cacheKey(text);
-    if (inFlight.has(key)) return;
+    if (inFlight.has(key) || Date.now() < (domRetryAt.get(key) ?? 0)) return;
     inFlight.add(key);
 
     try {
       const translated = await sendMessage(translationRequest({ type: MESSAGES.TRANSLATE, text }));
+      clearError();
       if (!translated) return;
       cacheSet(key, translated);
       // Ignore stale responses: caption or language may have changed meanwhile.
@@ -639,7 +700,9 @@
         scheduleSync();
       }
     } catch (err) {
-      log.warn('translation error:', err.message);
+      recordError(err);
+      domRetryAt.set(key, Date.now() + retryDelay(err));
+      log.warn(`translation error (${err.code}):`, err.message);
     } finally {
       inFlight.delete(key);
     }
@@ -651,8 +714,21 @@
 
     if (text !== dom.original) {
       dom.original = text;
-      dom.translation = text ? cacheGet(cacheKey(text)) ?? '' : '';
-      if (text && !dom.translation) requestDomTranslation(text);
+      dom.display = text;
+      dom.translation = '';
+    }
+    if (text && !dom.translation) {
+      const cue = cueForCaption(text);
+      if (cue) {
+        dom.display = cue.text; // file text has proper spacing between joined lines
+        // Pre-translated file: usually ready; otherwise translate just this cue now.
+        if (cue.translation !== null) dom.translation = cue.translation;
+        else if (needsTranslation(cue)) translateCueNow(cue);
+      } else {
+        const cached = cacheGet(cacheKey(text));
+        if (cached) dom.translation = cached;
+        else requestDomTranslation(text);
+      }
     }
 
     if (!captionEl?.parentElement || !dom.original) {
@@ -663,7 +739,7 @@
     renderOverlay({
       host: captionEl.parentElement,
       floating: false,
-      original: dom.original,
+      original: dom.display,
       translation: dom.translation,
     });
   }
@@ -671,6 +747,7 @@
   // ─── Sync ────────────────────────────────────────────────────────────────────
   function resetDom() {
     state.dom.original = '';
+    state.dom.display = '';
     state.dom.translation = '';
   }
 
@@ -710,7 +787,7 @@
     trackVideo(document.querySelector('video'));
     resolveCaptionSource();
 
-    if (vttReady()) {
+    if (useClock()) {
       startClock(); // the render loop takes over
       return;
     }
@@ -740,23 +817,72 @@
       resetVttTranslations();
     }
     if (changes.enabled?.newValue) translateAhead();
+    if ('syncMode' in changes) {
+      resetDom();
+      removeOverlay(); // the two modes place the overlay in different hosts
+    }
 
     scheduleSync();
   });
 
   // ─── Popup status ────────────────────────────────────────────────────────────
+  // ─── Export ──────────────────────────────────────────────────────────────────
+  function srtTime(seconds) {
+    const ms = Math.max(0, Math.round(seconds * 1000));
+    const pad = (n, len = 2) => String(n).padStart(len, '0');
+    return `${pad(Math.floor(ms / 3600000))}:${pad(Math.floor(ms / 60000) % 60)}:${pad(Math.floor(ms / 1000) % 60)},${pad(ms % 1000, 3)}`;
+  }
+
+  function exportFileName(ext) {
+    const title = document.title
+      .replace(/\s*\|\s*Udemy.*$/i, '')
+      .replace(/[\\/:*?"<>|]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const langs = `${state.vtt.locale ?? sourceLang()}-${state.cfg.lang}`;
+    return `${(title || 'udemy-lecture').slice(0, 100)}.${langs}.${ext}`;
+  }
+
+  /** Bilingual subtitles of the current lecture (original + translation per cue). */
+  function buildExport(format) {
+    if (!vttLoaded()) throw new Error('no subtitle file loaded for this lecture');
+    const { cues } = state.vtt;
+    const lines = cue => [cue.text, cue.translation].filter(Boolean).join('\n');
+    const content =
+      format === EXPORT_FORMATS.SRT
+        ? cues.map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${lines(c)}`).join('\n\n')
+        : cues.map(lines).join('\n\n');
+    return {
+      filename: exportFileName(format),
+      content: `${content}\n`,
+      total: cues.length,
+      translated: cues.filter(c => c.translation !== null).length,
+    };
+  }
+
+  // ─── Messages from the popup ─────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg?.type === MESSAGES.EXPORT) {
+      try {
+        sendResponse({ result: buildExport(msg.format) });
+      } catch (err) {
+        sendResponse({ error: err.message });
+      }
+      return false;
+    }
     if (msg?.type !== MESSAGES.GET_STATUS) return false;
-    const usingVtt = vttReady();
+    const usingVtt = vttLoaded();
     const cues = usingVtt ? state.vtt.cues : [];
     sendResponse({
       enabled: state.cfg.enabled,
       displayMode: state.cfg.displayMode,
+      syncMode: state.cfg.syncMode,
+      lastError: state.lastError,
       source: usingVtt ? 'vtt' : 'dom',
       captionOrigin: usingVtt ? state.vtt.origin : null,
       captionLocale: usingVtt ? state.vtt.locale : null,
       captionLabel: usingVtt ? state.vtt.label : null,
-      captionFound: usingVtt || Boolean(findCaption()),
+      captionFound: useClock() || Boolean(findCaption()),
       cuesTotal: cues.length,
       cuesTranslated: cues.filter(cue => cue.translation !== null).length,
     });

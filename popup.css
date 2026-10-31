@@ -130,6 +130,41 @@ select:focus { outline: none; border-color: var(--accent); }
 .range-row input[type=range] { flex: 1; accent-color: var(--accent); cursor: pointer; }
 .range-val { font-size: 13px; font-weight: 700; color: var(--accent-soft); min-width: 40px; text-align: right; }
 .range-hint { font-size: 10px; color: var(--faint); }
+.field-note { font-size: 11px; color: var(--muted); line-height: 1.4; }
+.field.is-disabled .range-row { opacity: 0.4; pointer-events: none; }
+
+/* ── Collapsible sections ── */
+.section { border: 1px solid var(--divider); border-radius: 8px; }
+.section summary { padding: 8px 10px; cursor: pointer; list-style: none; }
+.section summary::-webkit-details-marker { display: none; }
+.section summary::after { content: '▸'; float: right; transition: transform 0.2s; }
+.section[open] summary::after { transform: rotate(90deg); }
+.section-body { display: flex; flex-direction: column; gap: 8px; padding: 0 10px 10px; }
+
+.color-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
+.color-row input[type=color] {
+  width: 44px;
+  height: 24px;
+  padding: 0 2px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.button-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.btn {
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: 0.4; cursor: default; }
 .field-head { display: flex; align-items: baseline; justify-content: space-between; }
 .field-head .link-btn { font-size: 11px; }
 

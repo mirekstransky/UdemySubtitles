@@ -10,6 +10,13 @@
     TRANSLATION: 'translation', // translation only
   });
 
+  const SYNC_MODES = Object.freeze({
+    VIDEO: 'video', // own clock from video.currentTime (supports timing offset)
+    UDEMY: 'udemy', // follow Udemy's own captions, look up pre-translated text
+  });
+
+  const EXPORT_FORMATS = Object.freeze({ SRT: 'srt', TXT: 'txt' });
+
   const DEFAULTS = Object.freeze({
     enabled: true,
     lang: 'cs',
@@ -21,6 +28,12 @@
     // Subtitle timing shift in seconds; negative = show earlier, positive = later.
     // Only applies when subtitles are driven by the .vtt file (see content.js).
     timingOffset: 0,
+    syncMode: SYNC_MODES.VIDEO,
+    // Appearance
+    textColor: '#ffffff',      // translation line
+    originalColor: '#e6e6e6',  // original line
+    bgColor: '#000000',
+    bgOpacity: 70,             // %
   });
 
   const FONT_SIZE_MIN = 60;
@@ -31,6 +44,7 @@
   const TIMING_MIN = -3;
   const TIMING_MAX = 3;
   const TIMING_STEP = 0.1;
+  const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
 
   const clamp = (value, min, max, fallback) => {
     const n = Number(value);
@@ -42,6 +56,7 @@
     TRANSLATE_BATCH: 'ust/translateBatch',
     FETCH_VTT: 'ust/fetchVtt',
     GET_STATUS: 'ust/getStatus',
+    EXPORT: 'ust/export',
   });
 
   const COMMANDS = Object.freeze({
@@ -61,6 +76,11 @@
     s.verticalOffset = clamp(s.verticalOffset, OFFSET_MIN, OFFSET_MAX, DEFAULTS.verticalOffset);
     s.timingOffset =
       Math.round(clamp(s.timingOffset, TIMING_MIN, TIMING_MAX, DEFAULTS.timingOffset) * 10) / 10;
+    if (!Object.values(SYNC_MODES).includes(s.syncMode)) s.syncMode = DEFAULTS.syncMode;
+    for (const key of ['textColor', 'originalColor', 'bgColor']) {
+      if (!HEX_COLOR_RE.test(s[key])) s[key] = DEFAULTS[key];
+    }
+    s.bgOpacity = Math.round(clamp(s.bgOpacity, 0, 100, DEFAULTS.bgOpacity));
     s.enabled = Boolean(s.enabled);
     return s;
   }
@@ -123,6 +143,8 @@
     DEBUG_KEY,
     createLogger,
     DISPLAY_MODES,
+    SYNC_MODES,
+    EXPORT_FORMATS,
     DEFAULTS,
     FONT_SIZE_MIN,
     FONT_SIZE_MAX,
