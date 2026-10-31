@@ -34,6 +34,20 @@ html.ust-active [data-ust-native] {
   transition: transform 0.15s ease-out;
 }
 
+/* VTT mode: positioned over the video by content.js (bottom + font size in px
+   derived from the video height), independent of Udemy's caption container. */
+.ust-overlay.ust-overlay--floating {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--ust-bottom, 12%);
+  width: auto;
+  padding: 0 5%;
+  box-sizing: border-box;
+  z-index: 2;
+  transition: none;
+}
+
 .ust-overlay[hidden] {
   display: none !important;
 }

@@ -9,11 +9,18 @@ const {
   OFFSET_MIN,
   OFFSET_MAX,
   OFFSET_STEP,
+  TIMING_MIN,
+  TIMING_MAX,
+  TIMING_STEP,
   loadSettings,
   saveSettings,
 } = UST;
 
 const formatOffset = value => (value > 0 ? `+${value} %` : `${value} %`);
+const formatTiming = value => {
+  const s = Math.abs(value).toFixed(1).replace('.', ',');
+  return value > 0 ? `+${s} s` : value < 0 ? `−${s} s` : '0 s';
+};
 
 const LANGUAGES = [
   { code: 'cs', name: 'Čeština' },
@@ -73,7 +80,16 @@ function renderStatus(status, enabled) {
   if (!status) {
     return setStatus('', 'Tato karta není Udemy lekce nebo je potřeba stránku obnovit (F5).');
   }
-  if (status.captionFound) return setStatus('active', 'Titulky aktivní – překlad běží.');
+  if (status.source === 'vtt') {
+    const { cuesTranslated: done, cuesTotal: total, captionLabel, captionLocale, captionOrigin } = status;
+    const lang = captionLabel || captionLocale || 'neznámý jazyk';
+    const via = captionOrigin === 'api' ? 'Udemy API' : 'přehrávač';
+    const progress = done < total ? ` Přeloženo ${done}/${total}.` : ' Přeloženo vše.';
+    return setStatus('active', `Titulky ze souboru (${lang}, zdroj: ${via}), synchronizované s videem.${progress}`);
+  }
+  if (status.captionFound) {
+    return setStatus('active', 'Titulky ze stránky – překlad za běhu (časování nelze posunout).');
+  }
   setStatus('warn', 'Připojeno k Udemy, ale titulky nejsou zapnuty v přehrávači (CC).');
 }
 
@@ -120,9 +136,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   const offsetEl = $('verticalOffset');
   const offsetValEl = $('verticalOffsetVal');
 
+  const timingEl = $('timingOffset');
+  const timingValEl = $('timingOffsetVal');
+
   const showOffset = value => {
     offsetEl.value = value;
     offsetValEl.textContent = formatOffset(Number(value));
+  };
+  const showTiming = value => {
+    timingEl.value = value;
+    timingValEl.textContent = formatTiming(Number(value));
   };
 
   // Populate controls
@@ -138,6 +161,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   offsetEl.max = OFFSET_MAX;
   offsetEl.step = OFFSET_STEP;
   showOffset(settings.verticalOffset);
+  timingEl.min = TIMING_MIN;
+  timingEl.max = TIMING_MAX;
+  timingEl.step = TIMING_STEP;
+  showTiming(settings.timingOffset);
 
   // Event listeners – every change is persisted; content scripts react via storage.onChanged.
   enabledEl.addEventListener('change', async () => {
@@ -160,6 +187,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     showOffset(DEFAULTS.verticalOffset);
     saveSettings({ verticalOffset: DEFAULTS.verticalOffset });
   });
+  timingEl.addEventListener('input', () => showTiming(timingEl.value));
+  timingEl.addEventListener('change', () => saveSettings({ timingOffset: Number(timingEl.value) }));
+  $('resetTiming').addEventListener('click', () => {
+    showTiming(DEFAULTS.timingOffset);
+    saveSettings({ timingOffset: DEFAULTS.timingOffset });
+  });
 
   // Keep the popup in sync if settings change elsewhere (e.g. keyboard shortcut).
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -169,6 +202,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     if (changes.enabled) enabledEl.checked = changes.enabled.newValue;
     if (changes.verticalOffset) showOffset(changes.verticalOffset.newValue ?? DEFAULTS.verticalOffset);
+    if (changes.timingOffset) showTiming(changes.timingOffset.newValue ?? DEFAULTS.timingOffset);
   });
 
   renderShortcuts();

@@ -1,9 +1,9 @@
 'use strict';
 
 // Background service worker.
-// - Performs translation requests. In MV3 a content script's fetch() runs with the
-//   page origin (udemy.com) and is blocked by CORS; the service worker uses the
-//   extension origin + host_permissions, so the request succeeds here.
+// - Performs translation requests and downloads subtitle (.vtt) files. In MV3 a
+//   content script's fetch() runs with the page origin (udemy.com) and is subject to
+//   CORS; the service worker uses the extension origin + host_permissions.
 // - Handles keyboard shortcuts (chrome.commands).
 // - Migrates settings from older versions.
 //
@@ -47,22 +47,70 @@ async function translate({ text, sourceLang, targetLang }) {
   return data[0].map(chunk => chunk?.[0] ?? '').join('');
 }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg?.type !== MESSAGES.TRANSLATE) return false;
-  if (sender.id !== chrome.runtime.id) return false;
+/**
+ * Translates many short texts with as few requests as possible: the texts are joined
+ * with newlines (which the endpoint preserves) and split back. If the line count does
+ * not match, falls back to translating each text separately.
+ */
+async function translateBatch({ texts, sourceLang, targetLang }) {
+  const opts = { sourceLang, targetLang };
+  const lines = (await translate({ ...opts, text: texts.join('\n') })).split('\n');
+  if (lines.length === texts.length) return lines.map(line => line.trim());
 
-  if (typeof msg.text !== 'string' || !msg.text || !msg.targetLang) {
-    sendResponse({ error: 'Missing text or targetLang' });
+  console.warn(`${LOG_PREFIX} batch line mismatch (${lines.length}/${texts.length}), falling back`);
+  const result = [];
+  for (const text of texts) result.push(await translate({ ...opts, text }));
+  return result;
+}
+
+// ─── Subtitle file ─────────────────────────────────────────────────────────────
+function isUdemyCdnUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname.endsWith('.udemycdn.com');
+  } catch {
     return false;
   }
+}
 
-  translate(msg).then(
-    translated => sendResponse({ translated }),
-    err => {
-      console.warn(`${LOG_PREFIX} bg translation error:`, err.message);
-      sendResponse({ error: err.message });
+async function fetchVtt({ url }) {
+  if (!isUdemyCdnUrl(url)) throw new Error('URL is not a Udemy CDN address');
+  const resp = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.text();
+}
+
+// ─── Messaging ─────────────────────────────────────────────────────────────────
+// Each handler returns a promise; its result is sent back as { result } or { error }.
+const MESSAGE_HANDLERS = {
+  [MESSAGES.TRANSLATE]: msg => {
+    if (typeof msg.text !== 'string' || !msg.text || !msg.targetLang) {
+      throw new Error('Missing text or targetLang');
     }
-  );
+    return translate(msg);
+  },
+  [MESSAGES.TRANSLATE_BATCH]: msg => {
+    if (!Array.isArray(msg.texts) || !msg.texts.length || !msg.targetLang) {
+      throw new Error('Missing texts or targetLang');
+    }
+    return translateBatch(msg);
+  },
+  [MESSAGES.FETCH_VTT]: fetchVtt,
+};
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  const handler = MESSAGE_HANDLERS[msg?.type];
+  if (!handler || sender.id !== chrome.runtime.id) return false;
+
+  Promise.resolve()
+    .then(() => handler(msg))
+    .then(
+      result => sendResponse({ result }),
+      err => {
+        console.warn(`${LOG_PREFIX} bg ${msg.type} error:`, err.message);
+        sendResponse({ error: err.message });
+      }
+    );
   return true; // keep the channel open for the async sendResponse
 });
 

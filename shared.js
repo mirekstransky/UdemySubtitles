@@ -18,6 +18,9 @@
     displayMode: DISPLAY_MODES.BOTH,
     // Vertical shift in % of the video height; positive = up, 0 = Udemy's native position.
     verticalOffset: 0,
+    // Subtitle timing shift in seconds; negative = show earlier, positive = later.
+    // Only applies when subtitles are driven by the .vtt file (see content.js).
+    timingOffset: 0,
   });
 
   const FONT_SIZE_MIN = 60;
@@ -25,6 +28,9 @@
   const OFFSET_MIN = -10;
   const OFFSET_MAX = 80;
   const OFFSET_STEP = 5;
+  const TIMING_MIN = -3;
+  const TIMING_MAX = 3;
+  const TIMING_STEP = 0.1;
 
   const clamp = (value, min, max, fallback) => {
     const n = Number(value);
@@ -33,6 +39,8 @@
 
   const MESSAGES = Object.freeze({
     TRANSLATE: 'ust/translate',
+    TRANSLATE_BATCH: 'ust/translateBatch',
+    FETCH_VTT: 'ust/fetchVtt',
     GET_STATUS: 'ust/getStatus',
   });
 
@@ -51,6 +59,8 @@
     }
     s.fontSize = clamp(s.fontSize, FONT_SIZE_MIN, FONT_SIZE_MAX, DEFAULTS.fontSize);
     s.verticalOffset = clamp(s.verticalOffset, OFFSET_MIN, OFFSET_MAX, DEFAULTS.verticalOffset);
+    s.timingOffset =
+      Math.round(clamp(s.timingOffset, TIMING_MIN, TIMING_MAX, DEFAULTS.timingOffset) * 10) / 10;
     s.enabled = Boolean(s.enabled);
     return s;
   }
@@ -65,7 +75,7 @@
   }
 
   root.UST = Object.freeze({
-    LOG_PREFIX: '[UST]',
+    LOG_PREFIX: '[UdemySubtitles]',
     DISPLAY_MODES,
     DEFAULTS,
     FONT_SIZE_MIN,
@@ -73,6 +83,9 @@
     OFFSET_MIN,
     OFFSET_MAX,
     OFFSET_STEP,
+    TIMING_MIN,
+    TIMING_MAX,
+    TIMING_STEP,
     MESSAGES,
     COMMANDS,
     normalizeSettings,
