@@ -13,7 +13,7 @@
 importScripts('shared.js');
 
 const {
-  LOG_PREFIX,
+  createLogger,
   DISPLAY_MODES,
   MESSAGES,
   COMMANDS,
@@ -23,6 +23,8 @@ const {
   loadSettings,
   saveSettings,
 } = UST;
+
+const log = createLogger();
 
 const GTX_ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
 const MAX_QUERY_CHARS = 2000;
@@ -57,7 +59,7 @@ async function translateBatch({ texts, sourceLang, targetLang }) {
   const lines = (await translate({ ...opts, text: texts.join('\n') })).split('\n');
   if (lines.length === texts.length) return lines.map(line => line.trim());
 
-  console.warn(`${LOG_PREFIX} batch line mismatch (${lines.length}/${texts.length}), falling back`);
+  log.warn(`batch line mismatch (${lines.length}/${texts.length}), falling back to single requests`);
   const result = [];
   for (const text of texts) result.push(await translate({ ...opts, text }));
   return result;
@@ -107,7 +109,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     .then(
       result => sendResponse({ result }),
       err => {
-        console.warn(`${LOG_PREFIX} bg ${msg.type} error:`, err.message);
+        log.warn(`${msg.type} failed:`, err.message);
         sendResponse({ error: err.message });
       }
     );

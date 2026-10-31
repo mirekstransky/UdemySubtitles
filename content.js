@@ -24,7 +24,8 @@
   if (globalThis.__UST_CONTENT_LOADED) return;
   globalThis.__UST_CONTENT_LOADED = true;
 
-  const { LOG_PREFIX, DEFAULTS, MESSAGES, normalizeSettings, loadSettings } = globalThis.UST;
+  const { DEFAULTS, MESSAGES, normalizeSettings, loadSettings, createLogger } = globalThis.UST;
+  const log = createLogger();
 
   // ─── Constants ───────────────────────────────────────────────────────────────
   // Udemy uses CSS modules with hashed class names. The data-purpose attribute is
@@ -55,17 +56,17 @@
   // ─── State ───────────────────────────────────────────────────────────────────
   const state = {
     cfg: { ...DEFAULTS },
-    href: location.href,
+    context: null, // identity of the current lecture / video – see contextKey()
     overlay: null,
     syncScheduled: false,
     rafId: 0,
     // DOM fallback
     dom: { original: '', translation: '' },
-    // VTT source: { id, url, href, locale, label, origin, cues: [{ start, end, text, translation, pending }], translating }
+    // VTT source: { id, url, context, locale, label, origin, cues: [{ start, end, text, translation, pending }], translating }
     vtt: null,
     vttId: null,          // identity (lecture|locale) of the file loaded or loading
     playerLocale: null,   // locale of the last .vtt the player downloaded (= player selection)
-    playerVtt: null,      // { url, href } of that file (fallback source)
+    playerVtt: null,      // { url, context } of that file (fallback source)
     courseIdFromRequests: null,
     courseIdCache: null,  // { slug, id }
     captionList: null,    // { key: 'courseId/lectureId', items: [{ url, locale, label, auto }] }
@@ -143,12 +144,22 @@
     scheduleSync();
   });
 
+  // A new source in the same <video> element (e.g. next video in a preview) does
+  // not necessarily mutate the DOM, so media events also trigger a sync.
+  const VIDEO_EVENTS = ['loadstart', 'emptied'];
+
   function trackVideo(video) {
     if (video === state.video) return video;
-    if (state.video) resizeObserver.unobserve(state.video);
+    if (state.video) {
+      resizeObserver.unobserve(state.video);
+      VIDEO_EVENTS.forEach(type => state.video.removeEventListener(type, scheduleSync));
+    }
     state.video = video;
     state.videoHeight = video?.getBoundingClientRect().height ?? 0;
-    if (video) resizeObserver.observe(video);
+    if (video) {
+      resizeObserver.observe(video);
+      VIDEO_EVENTS.forEach(type => video.addEventListener(type, scheduleSync));
+    }
     return video;
   }
 
@@ -227,6 +238,28 @@
   const COURSE_API_RE = /\/api-2\.0\/(?:users\/me\/subscribed-courses|courses)\/(\d+)(?:[/?]|$)/;
 
   const lectureIdFromUrl = () => LECTURE_PATH_RE.exec(location.pathname)?.[1] ?? null;
+
+  /** Source of the current video – changes when the player switches to another video. */
+  function videoFingerprint() {
+    const video = document.querySelector('video');
+    if (!video) return '';
+    return video.querySelector('source')?.getAttribute('src') || video.currentSrc || video.getAttribute('src') || '';
+  }
+
+  /**
+   * Identity of what is being watched. Subtitles, translations and the overlay
+   * belong to one context and are dropped when it changes.
+   *
+   * - Lecture page: the lecture id. Deliberately NOT the full URL – switching the
+   *   tabs under the video (Overview, Q&A, Notes…) changes the hash/query but not
+   *   the lecture, and must not reload the subtitles.
+   * - Other pages (e.g. course preview): path + video source, so switching to
+   *   another video on the same page is detected too.
+   */
+  function contextKey() {
+    const lectureId = lectureIdFromUrl();
+    return lectureId ? `lecture:${lectureId}` : `page:${location.pathname}|video:${videoFingerprint()}`;
+  }
 
   const courseSlug = () => /\/course\/([^/]+)/.exec(location.pathname)?.[1] ?? null;
 
@@ -331,12 +364,10 @@
     try {
       const items = await fetchCaptionList(courseId, lectureId);
       state.captionList = { key, items };
-      console.log(
-        `${LOG_PREFIX} caption list (API): ${items.map(c => c.locale + (c.auto ? '*' : '')).join(', ') || 'none'}`
-      );
+      log.info(`caption list (API): ${items.map(c => c.locale + (c.auto ? '*' : '')).join(', ') || 'none'}`);
     } catch (err) {
       state.captionList = { key, items: [] };
-      console.warn(`${LOG_PREFIX} caption list API failed (${err.message}), using player request`);
+      log.warn(`caption list API failed (${err.message}), using player request`);
     } finally {
       state.captionListLoading = null;
       scheduleSync();
@@ -355,13 +386,16 @@
       if (items === null) return; // list still loading
       const chosen = items.length ? pickCaption(items) : null;
       if (chosen) {
+        if (state.vttId !== vttIdFor(chosen)) {
+          log.debug(`chosen caption ${chosen.locale}${chosen.auto ? ' (auto)' : ''}, player locale: ${state.playerLocale ?? '-'}`);
+        }
         requestVtt({ url: chosen.url, locale: chosen.locale, label: chosen.label, origin: 'api' });
         return;
       }
     }
     // Fallback: whatever the player downloaded for this page.
     const { playerVtt } = state;
-    if (playerVtt?.href === location.href) {
+    if (playerVtt?.context === contextKey()) {
       requestVtt({ url: playerVtt.url, locale: state.playerLocale, label: '', origin: 'player' });
     }
   }
@@ -372,12 +406,13 @@
       let changed = false;
       for (const { name } of list.getEntries()) {
         if (isPlayerSubtitleUrl(name)) {
-          state.playerVtt = { url: name, href: location.href };
+          state.playerVtt = { url: name, context: contextKey() };
           state.playerLocale = localeFromVttUrl(name);
           changed = true;
         } else if (!state.courseIdFromRequests && name.startsWith(location.origin)) {
           const id = COURSE_API_RE.exec(name)?.[1];
           if (id) {
+            log.debug(`course id ${id} found in page request`);
             state.courseIdFromRequests = id;
             changed = true;
           }
@@ -391,8 +426,10 @@
    * Loads a subtitle file unless the same lecture+language is already loaded.
    * (The API and the player use different signed URLs for the same file.)
    */
+  const vttIdFor = source => `${contextKey()}|${source.locale ?? source.url}`;
+
   function requestVtt(source) {
-    const id = `${lectureIdFromUrl() ?? location.pathname}|${source.locale ?? source.url}`;
+    const id = vttIdFor(source);
     if (id === state.vttId) return;
     state.vttId = id;
     loadVtt(id, source);
@@ -451,18 +488,18 @@
 
   // ─── VTT: loading & translate-ahead ──────────────────────────────────────────
   async function loadVtt(id, { url, locale, label, origin }) {
-    const href = location.href;
+    const context = contextKey();
     try {
       const cues = parseVtt(await sendMessage({ type: MESSAGES.FETCH_VTT, url }));
       if (state.vttId !== id) return; // superseded by a newer file meanwhile
       if (!cues.length) throw new Error('no cues in file');
 
-      state.vtt = { id, url, href, locale, label, origin, cues, translating: false };
-      console.log(`${LOG_PREFIX} subtitle file loaded (${origin}, ${locale ?? '?'}): ${cues.length} cues`);
+      state.vtt = { id, url, context, locale, label, origin, cues, translating: false };
+      log.info(`subtitle file loaded (${origin}, ${locale ?? '?'}): ${cues.length} cues`);
       translateAhead();
       scheduleSync();
     } catch (err) {
-      console.warn(`${LOG_PREFIX} subtitle file not used (${err.message}), using on-screen captions`);
+      log.warn(`subtitle file not used (${err.message}), using on-screen captions`);
       if (state.vttId === id) state.vttId = null; // allow a retry from another source
     }
   }
@@ -500,6 +537,7 @@
 
         const key = langKey();
         batch.forEach(cue => (cue.pending = true));
+        log.debug(`translating batch: ${batch.length} cues from ${batch[0].start.toFixed(1)} s (${key})`);
         try {
           const translations = await sendMessage(
             translationRequest({ type: MESSAGES.TRANSLATE_BATCH, texts: batch.map(c => c.text) })
@@ -507,9 +545,11 @@
           // Language changed mid-flight → cues were reset, drop this result.
           if (key === langKey()) batch.forEach((cue, i) => (cue.translation = translations[i] ?? ''));
           failures = 0;
+          const done = vtt.cues.filter(c => c.translation !== null).length;
+          if (done === vtt.cues.length) log.debug(`all ${done} cues translated`);
         } catch (err) {
           failures++;
-          console.warn(`${LOG_PREFIX} batch translation error:`, err.message);
+          log.warn('batch translation error:', err.message);
           await sleep(BATCH_RETRY_DELAY_MS);
         } finally {
           batch.forEach(cue => (cue.pending = false));
@@ -523,12 +563,13 @@
   /** On-demand translation of a single cue (e.g. after seeking into an untranslated part). */
   async function translateCueNow(cue) {
     const key = langKey();
+    log.debug(`on-demand translation of cue at ${cue.start.toFixed(1)} s`);
     cue.pending = true;
     try {
       const translated = await sendMessage(translationRequest({ type: MESSAGES.TRANSLATE, text: cue.text }));
       if (key === langKey()) cue.translation = translated;
     } catch (err) {
-      console.warn(`${LOG_PREFIX} translation error:`, err.message);
+      log.warn('translation error:', err.message);
     } finally {
       cue.pending = false;
     }
@@ -543,7 +584,7 @@
   // ─── VTT: render loop ────────────────────────────────────────────────────────
   function vttReady() {
     const { vtt, cfg } = state;
-    return Boolean(cfg.enabled && vtt && vtt.href === location.href && document.querySelector('video'));
+    return Boolean(cfg.enabled && vtt && vtt.context === contextKey() && document.querySelector('video'));
   }
 
   function startClock() {
@@ -598,7 +639,7 @@
         scheduleSync();
       }
     } catch (err) {
-      console.warn(`${LOG_PREFIX} translation error:`, err.message);
+      log.warn('translation error:', err.message);
     } finally {
       inFlight.delete(key);
     }
@@ -637,11 +678,13 @@
     state.syncScheduled = false;
 
     // Udemy is a SPA – lecture changes don't reload the page.
-    if (location.href !== state.href) {
-      state.href = location.href;
+    const context = contextKey();
+    if (context !== state.context) {
+      if (state.context) log.debug(`context changed: ${state.context} → ${context}`);
+      state.context = context;
       resetDom();
       removeOverlay();
-      if (state.vtt && state.vtt.href !== location.href) state.vtt = null;
+      if (state.vtt && state.vtt.context !== context) state.vtt = null;
       state.vttId = state.vtt?.id ?? null;
       // Another course → ids learned from the previous course's requests are stale.
       if (state.courseIdCache && state.courseIdCache.slug !== courseSlug()) {
@@ -664,6 +707,7 @@
     const captionEl = findCaption();
     if (captionEl && !captionEl.hasAttribute(NATIVE_ATTR)) captionEl.setAttribute(NATIVE_ATTR, '');
 
+    trackVideo(document.querySelector('video'));
     resolveCaptionSource();
 
     if (vttReady()) {
@@ -732,7 +776,7 @@
       });
       observeResourceRequests();
       scheduleSync();
-      console.log(`${LOG_PREFIX} Udemy Subtitle Translate v${chrome.runtime.getManifest().version} loaded`);
+      log.info(`Udemy Subtitle Translate v${chrome.runtime.getManifest().version} loaded`);
     })
-    .catch(err => console.warn(`${LOG_PREFIX} init failed:`, err.message));
+    .catch(err => log.error('init failed:', err.message));
 })();

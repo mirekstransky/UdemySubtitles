@@ -68,7 +68,7 @@ Dokud soubor `.vtt` není k dispozici:
 - Dokud je rozšíření zapnuté, **nativní Udemy titulek se skryje přes CSS** (`html.ust-active …{display:none}`) a rozšíření vykreslí vlastní box se dvěma řádky – originálem a překladem. Na obrazovce je tak vždy jen jeden prvek a titulky se nemůžou překrývat. Režim „Pouze překlad" jen skryje řádek s originálem.
 - Překlad se vyžádá přes background service worker (kvůli CORS), výsledky se cachují v rámci karty (LRU, 500 položek). Odpovědi, které dorazí pozdě pro už neaktuální titulek, se ignorují.
 - Nastavení je v `chrome.storage.sync`; změny (z popupu i zkratek) se projeví okamžitě přes `storage.onChanged`.
-- Při navigaci mezi lekcemi (SPA) se stav automaticky resetuje.
+- **Změna lekce / videa**: titulky, překlady a overlay patří k jedné „identitě“ toho, co se přehrává. Na stránce lekce je to ID lekce z URL – přepnutí záložek pod videem (Přehled, Q&A, Poznámky…) mění jen hash/query, a proto titulky znovu nenačítá. Na jiných stránkách (např. náhled kurzu) je identitou cesta + zdroj videa, takže se pozná i přepnutí na jiné video bez změny URL (události `loadstart`/`emptied`).
 
 ## Technická omezení
 
@@ -98,10 +98,12 @@ UdemySubtitles/
 Otevřete DevTools na Udemy stránce → Console → filtrujte `[UdemySubtitles]`:
 
 ```
-[UdemySubtitles] Udemy Subtitle Translate v1.4.0 loaded
+[UdemySubtitles] Udemy Subtitle Translate v1.5.0 loaded
 [UdemySubtitles] caption list (API): en_US, es_ES*     ← * = automaticky generované
 [UdemySubtitles] subtitle file loaded (api, en_US): 182 cues   ← titulky ze souboru aktivní
 [UdemySubtitles] translation error: HTTP 429     ← rate limit
 ```
+
+Podrobný výpis (výběr titulků, dávky překladu, změny lekce) zapnete v popupu zaškrtnutím **Ladicí výpis do konzole** – řádky mají prefix `[UdemySubtitles] [debug]`. Nastavení je jen pro tento počítač (`chrome.storage.local`) a projeví se okamžitě bez reloadu.
 
 Service worker: `chrome://extensions` → u rozšíření odkaz **service worker**.

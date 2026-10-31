@@ -170,3 +170,13 @@ select:focus { outline: none; border-color: var(--accent); }
 
 /* ── Footer ── */
 .footer { padding: 8px 16px 12px; font-size: 11px; color: var(--faint); text-align: center; line-height: 1.5; }
+.debug-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.debug-toggle input { accent-color: var(--accent); }

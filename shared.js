@@ -74,8 +74,54 @@
     return chrome.storage.sync.set(partial);
   }
 
+  // ─── Logging ─────────────────────────────────────────────────────────────────
+  // Normal operation: errors, warnings and a few one-off info lines.
+  // Debug mode (popup checkbox, stored per device in storage.local) adds details.
+  const LOG_PREFIX = '[UdemySubtitles]';
+  const DEBUG_KEY = 'debug';
+  const LOG_LEVELS = Object.freeze({ error: 0, warn: 1, info: 2, debug: 3 });
+
+  function createLogger() {
+    let level = LOG_LEVELS.info;
+    const apply = debug => (level = debug ? LOG_LEVELS.debug : LOG_LEVELS.info);
+
+    // Logging must never break the extension – storage problems only disable debug mode.
+    try {
+      chrome.storage.local
+        .get({ [DEBUG_KEY]: false })
+        .then(r => apply(r[DEBUG_KEY]))
+        .catch(() => {});
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && DEBUG_KEY in changes) apply(changes[DEBUG_KEY].newValue);
+      });
+    } catch {
+      /* storage unavailable – stay at info level */
+    }
+
+    // Getters hand out console methods pre-bound with the prefix (or a no-op), so
+    // DevTools shows the caller's file:line instead of this file.
+    // console.debug is hidden in DevTools by default ("Verbose"), so debug uses log.
+    const noop = () => {};
+    const bound = (method, tag) => console[method].bind(console, tag ? `${LOG_PREFIX} ${tag}` : LOG_PREFIX);
+    const methods = {
+      error: bound('error'),
+      warn: bound('warn'),
+      info: bound('log'),
+      debug: bound('log', '[debug]'),
+    };
+    const pick = lvl => (LOG_LEVELS[lvl] <= level ? methods[lvl] : noop);
+    return Object.freeze({
+      get error() { return pick('error'); },
+      get warn() { return pick('warn'); },
+      get info() { return pick('info'); },
+      get debug() { return pick('debug'); },
+    });
+  }
+
   root.UST = Object.freeze({
-    LOG_PREFIX: '[UdemySubtitles]',
+    LOG_PREFIX,
+    DEBUG_KEY,
+    createLogger,
     DISPLAY_MODES,
     DEFAULTS,
     FONT_SIZE_MIN,

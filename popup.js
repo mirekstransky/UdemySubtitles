@@ -12,6 +12,7 @@ const {
   TIMING_MIN,
   TIMING_MAX,
   TIMING_STEP,
+  DEBUG_KEY,
   loadSettings,
   saveSettings,
 } = UST;
@@ -204,6 +205,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (changes.verticalOffset) showOffset(changes.verticalOffset.newValue ?? DEFAULTS.verticalOffset);
     if (changes.timingOffset) showTiming(changes.timingOffset.newValue ?? DEFAULTS.timingOffset);
   });
+
+  // Debug logging is a per-device developer setting → storage.local, not sync.
+  const debugEl = $('debug');
+  debugEl.checked = Boolean((await chrome.storage.local.get({ [DEBUG_KEY]: false }))[DEBUG_KEY]);
+  debugEl.addEventListener('change', () => chrome.storage.local.set({ [DEBUG_KEY]: debugEl.checked }));
 
   renderShortcuts();
   renderStatus(await queryActiveTabStatus(), settings.enabled);
