@@ -653,9 +653,12 @@
     state.rafId = requestAnimationFrame(tick);
   }
 
+  /** Element the floating overlay is positioned in: the video's positioned ancestor. */
+  const videoHost = video => video.offsetParent ?? video.parentElement;
+
   function renderVtt() {
     const video = trackVideo(document.querySelector('video'));
-    const host = video.offsetParent ?? video.parentElement;
+    const host = videoHost(video);
     const { cues } = state.vtt;
     const t = playbackTime();
     const idx = cueIndexAt(cues, t);
@@ -735,10 +738,14 @@
       hideOverlay();
       return;
     }
-    trackVideo(findVideoFor(captionEl));
+    // Same placement and size as the "video" sync mode (floating over the video), so
+    // switching modes does not change how subtitles look. Udemy only decides WHEN and
+    // WHAT is shown. Without a video element, fall back to Udemy's caption container.
+    const video = trackVideo(findVideoFor(captionEl));
+    const host = video ? videoHost(video) : null;
     renderOverlay({
-      host: captionEl.parentElement,
-      floating: false,
+      host: host ?? captionEl.parentElement,
+      floating: Boolean(host),
       original: dom.display,
       translation: dom.translation,
     });
